@@ -69,7 +69,10 @@ fn main() -> Result<()> {
     let dump = a.dump_png.as_deref();
     match cmd.as_str() {
         "encode" => ansidrama::encode(&a.config, out, dump),
+        #[cfg(unix)]
         "record" => ansidrama::record(&a.config, out, dump),
+        #[cfg(not(unix))]
+        "record" => anyhow::bail!("record is only supported on unix platforms"),
         _ => unreachable!(),
     }
 }

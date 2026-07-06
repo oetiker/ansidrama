@@ -20,10 +20,13 @@ pub mod cursor;
 pub mod encode;
 pub mod frame;
 pub mod grid;
+#[cfg(unix)]
 pub mod keys;
 pub mod mouse;
 pub mod raster;
+#[cfg(unix)]
 pub mod record;
+#[cfg(unix)]
 pub mod term;
 
 use crate::config::{EncodeConfig, FrameSource};
@@ -99,6 +102,7 @@ pub fn encode(
 }
 
 /// Run the `record` command (see [`record::run`]).
+#[cfg(unix)]
 pub fn record(
     config_path: &Path,
     out_override: Option<&Path>,

@@ -43,6 +43,10 @@ fn named(name: &str) -> Option<Vec<u8>> {
 
 /// `C-<x>` → control byte (letters and `@ [ \ ] ^ _`, plus `C-Space` = NUL).
 fn ctrl(rest: &str) -> Result<Vec<u8>> {
+    // tmux parity: accept the named "Space" as well as a literal space.
+    if rest == "Space" {
+        return Ok(vec![0x00]);
+    }
     if rest.chars().count() == 1 {
         let c = rest.chars().next().unwrap();
         if c == ' ' {
@@ -140,5 +144,13 @@ mod tests {
     #[test]
     fn unknown_errors() {
         assert!(key_bytes("Nope").is_err());
+    }
+
+    #[test]
+    fn modifier_edge_paths() {
+        assert_eq!(key_bytes("M-Enter").unwrap(), b"\x1b\r"); // ESC prefix + recursion
+        assert_eq!(key_bytes("C-Space").unwrap(), vec![0x00]); // named space = NUL (tmux parity)
+        assert_eq!(key_bytes("C- ").unwrap(), vec![0x00]); // literal space = NUL
+        assert_eq!(key_bytes("C-@").unwrap(), vec![0x00]); // 0x40 & 0x1f = 0
     }
 }

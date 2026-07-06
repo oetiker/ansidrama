@@ -195,7 +195,8 @@ impl Term {
             if start.elapsed() >= cap {
                 return;
             }
-            let wait = (idle - s.last_activity.elapsed())
+            let wait = idle
+                .saturating_sub(s.last_activity.elapsed())
                 .min(cap.saturating_sub(start.elapsed()))
                 .max(Duration::from_millis(1));
             s = cvar.wait_timeout(s, wait).unwrap().0;
@@ -240,8 +241,13 @@ impl Term {
 
 impl Drop for Term {
     fn drop(&mut self) {
-        // Kill + reap the child first; that closes the slave, so the reader
-        // hits EOF and its thread exits, which we then join.
+        // The child is its own session/process-group leader (setsid in spawn),
+        // so kill the whole group — otherwise a backgrounded grandchild could
+        // keep the PTY slave open and block the reader thread's EOF forever.
+        // The group is isolated (setsid), so this can never touch our own group.
+        if let Some(pid) = rustix::process::Pid::from_raw(self.child.id() as i32) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(h) = self.reader.take() {
