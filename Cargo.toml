@@ -1,0 +1,21 @@
+[package]
+name = "ansidrama"
+version = "0.1.0"
+edition = "2021"
+description = "Assemble or record a terminal session into a crisp animated WebP — scripted scenes, silent-movie title cards, deterministic frames."
+license = "MIT"
+readme = "README.md"
+keywords = ["terminal", "webp", "screencast", "demo", "tui"]
+categories = ["command-line-utilities", "multimedia::images"]
+
+[dependencies]
+ab_glyph = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+webp = "0.3"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+# Small, self-contained demo binary; box-glyph painting is not hot.
+opt-level = 2
