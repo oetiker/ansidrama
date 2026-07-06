@@ -195,12 +195,19 @@ remains fully portable.
 
 ## Dependencies
 
-Add: `vt100` (0.16), `rustix-openpty` (0.2, pulls `rustix`). Remove: the runtime
-need for the `tmux` binary. Measured transitive footprint of the added stack: 10
-crates total, entirely pure Rust, zero `*-sys`/`cc`/vendored-C — chosen over
-`portable-pty` (23 crates) and `alacritty_terminal` (34+, a full emulator) per
-the lean/pure-Rust preference. `portable-pty` is the documented fallback if the
-hand-rolled `pre_exec` spawn proves fiddly.
+Add: `vt100` (the `Junyi-99/vt100-rust` `deck` fork — a git dep, API-identical to
+crates.io `vt100` 0.16.2 but with VS16 emoji-double-width and wide-char-clear
+fixes relevant to `screen_to_grid`), `rustix-openpty` (0.2, pulls `rustix`).
+Remove: the runtime need for the `tmux` binary. Measured transitive footprint of
+the added stack: ~10 crates total, entirely pure Rust, zero `*-sys`/`cc`/
+vendored-C — chosen over `portable-pty` (23 crates) and `alacritty_terminal`
+(34+, a full emulator) per the lean/pure-Rust preference. `portable-pty` is the
+documented fallback if the hand-rolled `pre_exec` spawn proves fiddly.
+
+The vt100 git dep is pinned by `Cargo.lock` (reproducible builds). Caveat: a
+future crates.io publish (out of scope here) would require upstreaming the fixes
+or publishing the fork under its own name, since crates.io forbids git deps; the
+release binaries/deb/rpm build from source, where a git dep is fine.
 
 ## Rollout
 
