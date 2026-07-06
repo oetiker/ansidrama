@@ -29,21 +29,6 @@ const ARROW: &[&str] = &[
     "        OO",
 ];
 
-/// Draw a text caret — a slim vertical beam at the left of the cell `(x0, y0)`,
-/// full cell height, in `color`. Marks the app's insertion point while typing.
-pub fn caret(img: &mut RgbaImage, x0: i32, y0: i32, cell_w: u32, cell_h: u32, color: (u8, u8, u8)) {
-    let (w, h) = (img.width() as i32, img.height() as i32);
-    let bar = (cell_w / 4).max(2) as i32;
-    let c = Rgba([color.0, color.1, color.2, 255]);
-    for y in y0..(y0 + cell_h as i32) {
-        for x in x0..(x0 + bar) {
-            if x >= 0 && y >= 0 && x < w && y < h {
-                img.put_pixel(x as u32, y as u32, c);
-            }
-        }
-    }
-}
-
 /// Stamp the pointer with its tip at pixel `(px, py)`, clipped to the image.
 pub fn stamp(img: &mut RgbaImage, px: i32, py: i32) {
     let (w, h) = (img.width() as i32, img.height() as i32);

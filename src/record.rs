@@ -129,22 +129,20 @@ impl<'a> Recorder<'a> {
                 let (px, py) = self.renderer.cell_origin(x, y);
                 cursor::stamp(&mut img, px, py);
             } else if let Some((cx, cy)) = self.caret {
-                let (px, py) = self.renderer.cell_origin(cx + 1, cy + 1);
-                let (cw, ch) = self.renderer.cell_size();
-                // Contrast the caret against the cell it sits on.
-                let bg = self
+                // The app's text caret → a block cursor (inverse video) on that cell.
+                let cell = self
                     .last_grid
                     .get(cy as usize)
                     .and_then(|r| r.get(cx as usize))
-                    .map(|c| c.bg)
-                    .unwrap_or((0, 0, 0));
-                let lum = bg.0 as u32 + bg.1 as u32 + bg.2 as u32;
-                let color = if lum > 384 {
-                    (20, 24, 28)
-                } else {
-                    (235, 235, 235)
-                };
-                cursor::caret(&mut img, px, py, cw, ch, color);
+                    .copied()
+                    .unwrap_or(Cell {
+                        ch: ' ',
+                        fg: (0, 0, 0),
+                        bg: (255, 255, 255),
+                        bold: false,
+                    });
+                self.renderer
+                    .draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
             }
         }
         self.frames.push(Frame {
@@ -161,6 +159,7 @@ impl<'a> Recorder<'a> {
             self.cfg.rows,
             card,
             self.cfg.card_font_px,
+            self.cfg.card_subtitle_px,
         )?;
         self.frames.push(Frame {
             image: img,

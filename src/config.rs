@@ -37,9 +37,12 @@ pub struct Card {
     /// Draw the double-line intertitle frame (default true).
     #[serde(default = "df_true")]
     pub border: bool,
-    /// Per-card font size override (else the config's `card_font_px`).
+    /// Per-card title-font override (else the config's `card_font_px`).
     #[serde(default)]
     pub font_px: Option<f32>,
+    /// Per-card subtitle-font override (else the config's `card_subtitle_px`).
+    #[serde(default)]
+    pub subtitle_px: Option<f32>,
 }
 
 fn default_card_fg() -> String {
@@ -74,6 +77,9 @@ pub struct EncodeConfig {
     /// Title-card font pixel size.
     #[serde(default = "default_card_font_px")]
     pub card_font_px: f32,
+    /// Title-card subtitle font pixel size (lines after the first).
+    #[serde(default = "default_card_subtitle_px")]
+    pub card_subtitle_px: f32,
     /// Cap the animation frame rate (clamps each frame's minimum hold).
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
@@ -91,6 +97,10 @@ pub fn default_font_px() -> f32 {
 /// and are not bound to the terminal cell grid.
 pub fn default_card_font_px() -> f32 {
     44.0
+}
+/// Default card subtitle font size (lines after the first).
+pub fn default_card_subtitle_px() -> f32 {
+    22.0
 }
 /// Default frame-rate cap.
 pub fn default_max_fps() -> u32 {
@@ -149,6 +159,9 @@ pub struct RecordConfig {
     /// Title-card font pixel size (cards are not bound to the terminal cell grid).
     #[serde(default = "default_card_font_px")]
     pub card_font_px: f32,
+    /// Title-card subtitle font pixel size (lines after the first).
+    #[serde(default = "default_card_subtitle_px")]
+    pub card_subtitle_px: f32,
     /// Cap the animation frame rate (clamps each frame's minimum hold).
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,

@@ -73,6 +73,49 @@ impl Renderer {
         )
     }
 
+    /// Draw a block cursor over 1-based cell `(col, row)`: a solid rectangle that
+    /// contrasts the cell background, with the cell's glyph re-drawn in the cell's
+    /// background colour on top — inverse video. So a character under the cursor is
+    /// inverted, and a blank insert cell shows a solid block.
+    pub fn draw_block_cursor(&self, img: &mut RgbaImage, col: u32, row: u32, cell: &Cell) {
+        let (x0, y0) = self.cell_origin(col, row);
+        let bg = cell.bg;
+        let lum = bg.0 as u32 + bg.1 as u32 + bg.2 as u32;
+        let block: Rgb = if lum > 384 {
+            (20, 24, 28)
+        } else {
+            (235, 235, 235)
+        };
+        let (iw, ih) = (img.width() as i32, img.height() as i32);
+        for yy in y0..(y0 + self.cell_h as i32) {
+            for xx in x0..(x0 + self.cell_w as i32) {
+                if xx >= 0 && yy >= 0 && xx < iw && yy < ih {
+                    img.put_pixel(xx as u32, yy as u32, Rgba([block.0, block.1, block.2, 255]));
+                }
+            }
+        }
+        let ch = cell.ch;
+        if ch == ' ' || ch == '\u{00a0}' || x0 < 0 || y0 < 0 {
+            return;
+        }
+        let (ux, uy) = (x0 as u32, y0 as u32);
+        // Re-draw the glyph in the cell's background colour, over the block.
+        if let Some(spec) = box_spec(ch) {
+            self.draw_box(img, ux, uy, spec, bg);
+        } else if !self.draw_block(img, ux, uy, ch, bg) {
+            let font = if cell.bold { &self.bold } else { &self.regular };
+            self.blit_glyph(
+                img,
+                font,
+                ch,
+                x0 as f32,
+                y0 as f32 + self.ascent,
+                self.scale,
+                bg,
+            );
+        }
+    }
+
     /// Render one frame. `cols`/`rows` fix the image size so every frame in an
     /// animation has identical dimensions even if a captured row is short.
     pub fn render(&self, grid: &[Vec<Cell>], cols: u32, rows: u32) -> RgbaImage {
@@ -132,10 +175,9 @@ impl Renderer {
     }
 
     /// Render a "silent-movie" title card directly at `w × h`, independent of the
-    /// terminal cell size: a solid `bg` panel with a double-line frame and the
-    /// `lines` centered (both axes) at `card_px` — so cards can use a larger,
-    /// readable font than the small terminal capture. Frames stay `w × h` so they
-    /// sit in the same animation.
+    /// terminal cell size: a solid `bg` panel with a double-line frame and centered
+    /// text — the first line (the title) at `title_px`, the rest (subtitles) at the
+    /// smaller `subtitle_px`. Frames stay `w × h` so they sit in the same animation.
     #[allow(clippy::too_many_arguments)]
     pub fn render_card(
         &self,
@@ -146,21 +188,18 @@ impl Renderer {
         bg: Rgb,
         bold: bool,
         border: bool,
-        card_px: f32,
+        title_px: f32,
+        subtitle_px: f32,
     ) -> RgbaImage {
-        let card_px = card_px.max(6.0);
+        let title_px = title_px.max(6.0);
+        let subtitle_px = subtitle_px.max(6.0);
         let mut img = RgbaImage::from_pixel(w, h, Rgba([bg.0, bg.1, bg.2, 255]));
         let font = if bold { &self.bold } else { &self.regular };
-        let scaled = font.as_scaled(PxScale::from(card_px));
-        let adv = scaled.h_advance(font.glyph_id('M'));
-        let asc = scaled.ascent();
-        let line_h = asc - scaled.descent();
-        let scale = PxScale::from(card_px);
 
         if border && w > 8 && h > 8 {
-            let inset = (card_px * 0.6).round() as i32;
-            let gap = (card_px * 0.14).round().max(2.0) as i32;
-            let t = (card_px / 20.0).round().max(1.0) as i32;
+            let inset = (title_px * 0.6).round() as i32;
+            let gap = (title_px * 0.14).round().max(2.0) as i32;
+            let t = (title_px / 20.0).round().max(1.0) as i32;
             rect_outline(
                 &mut img,
                 inset,
@@ -181,16 +220,36 @@ impl Renderer {
             );
         }
 
-        let block_h = lines.len() as f32 * line_h;
-        let top = (h as f32 - block_h) / 2.0;
-        for (i, line) in lines.iter().enumerate() {
+        // Per-line metrics: line 0 is the title, the rest are subtitles.
+        let metrics = |px: f32| {
+            let s = font.as_scaled(PxScale::from(px));
+            (
+                s.h_advance(font.glyph_id('M')),
+                s.ascent(),
+                s.ascent() - s.descent(),
+            )
+        };
+        let per_line: Vec<(f32, f32, f32, f32)> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let px = if i == 0 { title_px } else { subtitle_px };
+                let (adv, asc, line_h) = metrics(px);
+                (px, adv, asc, line_h)
+            })
+            .collect();
+
+        let block_h: f32 = per_line.iter().map(|m| m.3).sum();
+        let mut y = (h as f32 - block_h) / 2.0;
+        for (line, &(px, adv, asc, line_h)) in lines.iter().zip(&per_line) {
             let text_w = line.chars().count() as f32 * adv;
             let mut x = (w as f32 - text_w) / 2.0;
-            let baseline = top + i as f32 * line_h + asc;
+            let baseline = y + asc;
             for ch in line.chars() {
-                self.blit_glyph(&mut img, font, ch, x, baseline, scale, fg);
+                self.blit_glyph(&mut img, font, ch, x, baseline, PxScale::from(px), fg);
                 x += adv;
             }
+            y += line_h;
         }
         img
     }
