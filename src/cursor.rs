@@ -6,7 +6,7 @@ use image::{Rgba, RgbaImage};
 
 /// Classic arrow pointer, hotspot (tip) at the top-left. `O` = black outline,
 /// `W` = white fill, space = transparent. Stamped 1:1 (native pixels) so it stays
-/// crisp; ~12×19px reads well against an 18px-cell terminal.
+/// crisp. The tail drops straight down (no rightward slant).
 const ARROW: &[&str] = &[
     "O",
     "OO",
@@ -18,15 +18,13 @@ const ARROW: &[&str] = &[
     "OWWWWWWO",
     "OWWWWWWWO",
     "OWWWWWWWWO",
-    "OWWWWWWWWWO",
-    "OWWWWWOOOOO",
-    "OWWOWWO",
-    "OWO OWWO",
-    "OO  OWWO",
-    "O    OWWO",
+    "OWWWWOWWWO",
+    "OWWOOOWWO",
+    "OWO  OWWO",
+    "OO   OWWO",
     "      OWWO",
-    "       OWWO",
-    "        OO",
+    "      OWWO",
+    "      OOO",
 ];
 
 /// Stamp the pointer with its tip at pixel `(px, py)`, clipped to the image.
