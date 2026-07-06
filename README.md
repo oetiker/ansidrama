@@ -2,7 +2,7 @@
 
 Turn a terminal session into a crisp, tiny, **animated WebP** — scripted scenes,
 silent-movie title cards, deterministic frames. No browser, no ffmpeg, no
-asciinema. One optional runtime dependency: `tmux`.
+asciinema, no runtime dependencies — a single static binary.
 
 `ansidrama` renders each frame itself: it parses the terminal's ANSI cell grid
 and rasterizes it with a bundled monospace font, hand-painting box-drawing and
@@ -45,7 +45,7 @@ ansidrama encode demo.toml            # writes demo.webp
 ansidrama encode demo.toml -o out.webp --dump-png frames/
 ```
 
-### `record` — drive a command in tmux, capture each frame
+### `record` — drive a command in an embedded terminal, capture each frame
 
 ```toml
 # record.toml
@@ -93,7 +93,7 @@ UI is shown.
 
 | Field    | Meaning |
 |----------|---------|
-| `keys`   | named tmux keys, one frame captured per key: `["F10", "Down", "Enter"]` |
+| `keys`   | named keys, one frame captured per key: `["F10", "Down", "Enter"]` |
 | `text`   | a string typed literally, one frame per character |
 | `click`  | `{ x, y, button = "left" }` — the pointer moves in, then press + release |
 | `drag`   | `{ from = [x,y], to = [x,y], button = "left" }` — one frame per cell |
@@ -112,7 +112,7 @@ UI is shown.
 | `card_font_px` | global + per-card | title-card font (cards aren't bound to the cell grid) |
 | `max_fps` | global | clamps the minimum per-frame hold |
 
-Keyboard/typing frames draw the app's **text caret** (from tmux's cursor); mouse
+Keyboard/typing frames draw the app's **text caret** (from the embedded terminal's cursor); mouse
 frames draw the **pointer** — set `cursor = false` to disable both.
 
 Exactly one action per scene. Coordinates are 1-based terminal columns/rows. Mouse
@@ -139,8 +139,8 @@ yellow grey`). `border` (default `true`) draws the frame.
 cargo install --path .        # or: cargo build --release
 ```
 
-`record` needs **tmux ≥ 3.2** on `PATH` (for `-e` env passing). `encode` needs
-nothing but the binary. The font (JetBrains Mono, OFL) is bundled.
+`record` embeds its own terminal (a PTY + VT parser), so it needs **nothing but
+the binary** — same as `encode`. The font (JetBrains Mono, OFL) is bundled.
 
 ## How it compares
 
@@ -150,7 +150,7 @@ frame is a settled screen grab, not a real-time video. Every run is
 **deterministic** (same script → same bytes) and the output is **lossless, crisp
 and small**. For true real-time video with a headless browser and ffmpeg →
 GIF/MP4, reach for [VHS](https://github.com/charmbracelet/vhs); `ansidrama` trades
-that for determinism, sharpness and a near-zero toolchain (just `tmux`).
+that for determinism, sharpness and a zero-dependency single binary.
 
 ## License
 

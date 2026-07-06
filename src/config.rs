@@ -2,7 +2,7 @@
 //!
 //! `encode.toml` — a list of frames (each a captured `.ansi` file or a synthetic
 //! card) with hold times. `record.toml` — a launch command plus a list of scenes
-//! (keystrokes / typed text / friendly mouse / cards) to drive in tmux.
+//! (keystrokes / typed text / friendly mouse / cards) to drive in an embedded terminal.
 
 use std::collections::BTreeMap;
 
