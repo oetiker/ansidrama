@@ -305,17 +305,31 @@ mod tests {
 mod pty_tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    /// Poll the terminal until row 0 contains `needle`, or a generous deadline
+    /// passes. Timing-dependent capture is inherently racy under parallel load
+    /// (a single fixed `settle` window can return before the child's first
+    /// output), so tests wait for the expected content rather than one window.
+    fn wait_for_row0(term: &mut Term, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            term.settle(Duration::from_millis(100), Duration::from_millis(500));
+            let row0: String = term.grid()[0].iter().map(|c| c.ch).collect();
+            if row0.contains(needle) || Instant::now() >= deadline {
+                return row0;
+            }
+        }
+    }
 
     #[test]
     fn captures_printed_text() {
         let env = BTreeMap::new();
         // Print, then sleep so the child is still alive while we capture.
         let mut term = Term::spawn(20, 5, "printf 'HELLO'; sleep 2", &env).unwrap();
-        term.settle(Duration::from_millis(150), Duration::from_millis(2000));
-        let grid = term.grid();
-        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        let row0 = wait_for_row0(&mut term, "HELLO");
         assert!(row0.starts_with("HELLO"), "row0 = {row0:?}");
+        let grid = term.grid();
         assert_eq!(grid.len(), 5);
         assert_eq!(grid[0].len(), 20);
     }
@@ -325,10 +339,9 @@ mod pty_tests {
         let env = BTreeMap::new();
         // `read -n1 k` echoes the key we send back onto the screen.
         let mut term = Term::spawn(20, 3, "read -n1 k; printf \"got:$k\"; sleep 2", &env).unwrap();
-        term.settle(Duration::from_millis(150), Duration::from_millis(1000));
+        term.settle(Duration::from_millis(100), Duration::from_millis(500));
         term.send_key("x").unwrap();
-        term.settle(Duration::from_millis(150), Duration::from_millis(2000));
-        let row0: String = term.grid()[0].iter().map(|c| c.ch).collect();
+        let row0 = wait_for_row0(&mut term, "got:x");
         assert!(row0.contains("got:x"), "row0 = {row0:?}");
     }
 }
