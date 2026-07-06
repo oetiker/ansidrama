@@ -49,13 +49,14 @@ ansidrama encode demo.toml -o out.webp --dump-png frames/
 
 ```toml
 # record.toml
-launch  = "myapp --config demo.toml"
-cols    = 100
-rows    = 30
-font_px = 26              # bigger = crisper / larger output
-max_fps = 30              # clamp minimum frame duration
-type_cs = 8               # hold per key / typed char (centiseconds)
-move_cs = 3               # hold per mouse cell-step
+launch       = "myapp --config demo.toml"
+cols         = 100
+rows         = 30
+font_px      = 18         # terminal font (small is fine — it's a dense capture)
+card_font_px = 44         # title-card font (larger — read at a glance)
+max_fps      = 30         # clamp minimum frame duration
+type_cs      = 8          # hold per key / typed char (centiseconds)
+move_cs      = 3          # hold per mouse cell-step
 out     = "docs/demo/myapp.webp"
 env     = { COLORTERM = "truecolor" }
 quit_keys = ["C-c"]
@@ -107,8 +108,12 @@ UI is shown.
 | `hold_cs` | per scene | hold on the **final** frame of the scene — the pause on the result |
 | `type_cs` | global + per-scene | hold per key / typed-char frame (typing speed) |
 | `move_cs` | global + per-scene | hold per mouse cell-step frame (pointer speed) |
-| `font_px` | global | font size → cell size → output resolution |
+| `font_px` | global | terminal font size → cell size → output resolution |
+| `card_font_px` | global + per-card | title-card font (cards aren't bound to the cell grid) |
 | `max_fps` | global | clamps the minimum per-frame hold |
+
+Keyboard/typing frames draw the app's **text caret** (from tmux's cursor); mouse
+frames draw the **pointer** — set `cursor = false` to disable both.
 
 Exactly one action per scene. Coordinates are 1-based terminal columns/rows. Mouse
 actions expand to SGR (1006) mouse reports under the hood, so you never write

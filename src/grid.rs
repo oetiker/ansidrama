@@ -17,17 +17,6 @@ pub struct Cell {
     pub bold: bool,
 }
 
-impl Cell {
-    fn blank(bg: Rgb) -> Self {
-        Cell {
-            ch: ' ',
-            fg: bg,
-            bg,
-            bold: false,
-        }
-    }
-}
-
 // --- ANSI capture → grid ----------------------------------------------------
 
 /// Classic VGA/xterm 16-colour palette, used to resolve SGR 30–37/40–47 and the
@@ -219,63 +208,6 @@ pub fn parse_grid(input: &str) -> Vec<Vec<Cell>> {
 
 // --- synthetic title card ---------------------------------------------------
 
-/// Build a `cols × rows` "silent-movie" title card: a solid `bg` panel with the
-/// given `lines` of text centered (both axes), drawn in `fg`, optionally inside a
-/// double-line frame (the classic intertitle border). Longer-than-width lines are
-/// clipped from the right. Rendered by the same rasterizer as a captured frame,
-/// so cards drop straight into a sequence.
-pub fn card(
-    cols: u32,
-    rows: u32,
-    lines: &[String],
-    fg: Rgb,
-    bg: Rgb,
-    bold: bool,
-    border: bool,
-) -> Vec<Vec<Cell>> {
-    let (cols_u, rows_u) = (cols as usize, rows as usize);
-    let mut grid: Vec<Vec<Cell>> = (0..rows_u).map(|_| vec![Cell::blank(bg); cols_u]).collect();
-    let mut put = |x: usize, y: usize, ch: char| {
-        if x < cols_u && y < rows_u {
-            grid[y][x] = Cell { ch, fg, bg, bold };
-        }
-    };
-
-    // Double-line frame, inset from the edge. The horizontal inset is larger than
-    // the vertical one so the visual margin is roughly even (cells are ~2× taller
-    // than wide). Only drawn when the card is big enough to hold it.
-    if border && cols_u >= 7 && rows_u >= 5 {
-        let (mx, my) = (2usize, 1usize);
-        let (x0, x1) = (mx, cols_u - 1 - mx);
-        let (y0, y1) = (my, rows_u - 1 - my);
-        put(x0, y0, '╔');
-        put(x1, y0, '╗');
-        put(x0, y1, '╚');
-        put(x1, y1, '╝');
-        for x in (x0 + 1)..x1 {
-            put(x, y0, '═');
-            put(x, y1, '═');
-        }
-        for y in (y0 + 1)..y1 {
-            put(x0, y, '║');
-            put(x1, y, '║');
-        }
-    }
-
-    // Center the block of text lines (both axes) within the whole card.
-    let n = lines.len();
-    let top = rows_u.saturating_sub(n) / 2;
-    for (i, line) in lines.iter().enumerate() {
-        let y = top + i;
-        let chars: Vec<char> = line.chars().collect();
-        let left = cols_u.saturating_sub(chars.len()) / 2;
-        for (j, &ch) in chars.iter().enumerate() {
-            put(left + j, y, ch);
-        }
-    }
-    grid
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,46 +233,5 @@ mod tests {
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].len(), 2);
         assert_eq!(g[1][1].ch, 'd');
-    }
-
-    #[test]
-    fn card_centers_text() {
-        // Borderless (card too small for a frame anyway).
-        let g = card(
-            10,
-            3,
-            &["hi".to_string()],
-            (255, 255, 255),
-            (0, 0, 0),
-            false,
-            false,
-        );
-        assert_eq!(g.len(), 3);
-        assert_eq!(g[0].len(), 10);
-        // Single line → vertically centered on row 1; "hi" (width 2) centered → cols 4,5.
-        assert_eq!(g[1][4].ch, 'h');
-        assert_eq!(g[1][5].ch, 'i');
-        assert_eq!(g[1][0].ch, ' ');
-        assert_eq!(g[1][0].bg, (0, 0, 0));
-    }
-
-    #[test]
-    fn card_draws_double_frame() {
-        let g = card(
-            20,
-            7,
-            &["ok".to_string()],
-            (255, 255, 255),
-            (0, 0, 0),
-            false,
-            true,
-        );
-        // Frame inset by (mx=2, my=1): corners at (2,1),(17,1),(2,5),(17,5).
-        assert_eq!(g[1][2].ch, '╔');
-        assert_eq!(g[1][17].ch, '╗');
-        assert_eq!(g[5][2].ch, '╚');
-        assert_eq!(g[5][17].ch, '╝');
-        assert_eq!(g[1][9].ch, '═');
-        assert_eq!(g[3][2].ch, '║');
     }
 }

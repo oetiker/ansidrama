@@ -37,6 +37,9 @@ pub struct Card {
     /// Draw the double-line intertitle frame (default true).
     #[serde(default = "df_true")]
     pub border: bool,
+    /// Per-card font size override (else the config's `card_font_px`).
+    #[serde(default)]
+    pub font_px: Option<f32>,
 }
 
 fn default_card_fg() -> String {
@@ -65,9 +68,12 @@ impl Card {
 pub struct EncodeConfig {
     pub cols: u32,
     pub rows: u32,
-    /// Font pixel size — sets the cell size and thus the output resolution.
+    /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
+    /// Title-card font pixel size.
+    #[serde(default = "default_card_font_px")]
+    pub card_font_px: f32,
     /// Cap the animation frame rate (clamps each frame's minimum hold).
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
@@ -77,9 +83,14 @@ pub struct EncodeConfig {
     pub frames: Vec<FrameSpec>,
 }
 
-/// Default font pixel size — large enough to read comfortably in a README.
+/// Default terminal font pixel size (small is fine — the capture is dense).
 pub fn default_font_px() -> f32 {
-    28.0
+    18.0
+}
+/// Default title-card font pixel size — larger, since cards are read at a glance
+/// and are not bound to the terminal cell grid.
+pub fn default_card_font_px() -> f32 {
+    44.0
 }
 /// Default frame-rate cap.
 pub fn default_max_fps() -> u32 {
@@ -132,9 +143,12 @@ pub struct RecordConfig {
     pub launch: String,
     pub cols: u32,
     pub rows: u32,
-    /// Font pixel size — sets the cell size and thus the output resolution.
+    /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
+    /// Title-card font pixel size (cards are not bound to the terminal cell grid).
+    #[serde(default = "default_card_font_px")]
+    pub card_font_px: f32,
     /// Cap the animation frame rate (clamps each frame's minimum hold).
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,

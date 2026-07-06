@@ -13,8 +13,16 @@ pub fn render_ansi(r: &Renderer, cols: u32, rows: u32, ansi: &str) -> RgbaImage 
     r.render(&g, cols, rows)
 }
 
-/// Rasterize a synthetic title card to a frame.
-pub fn render_card(r: &Renderer, cols: u32, rows: u32, card: &Card) -> Result<RgbaImage> {
+/// Rasterize a synthetic title card to a frame at the terminal's pixel size, but
+/// with the card's own (larger) font. `default_px` is the config's `card_font_px`,
+/// used when the card sets no `font_px`.
+pub fn render_card(
+    r: &Renderer,
+    cols: u32,
+    rows: u32,
+    card: &Card,
+    default_px: f32,
+) -> Result<RgbaImage> {
     let fg = color::parse(&card.fg)
         .map_err(anyhow::Error::msg)
         .context("card `fg`")?;
@@ -22,6 +30,7 @@ pub fn render_card(r: &Renderer, cols: u32, rows: u32, card: &Card) -> Result<Rg
         .map_err(anyhow::Error::msg)
         .context("card `bg`")?;
     let lines = card.resolved_lines();
-    let g = grid::card(cols, rows, &lines, fg, bg, card.bold, card.border);
-    Ok(r.render(&g, cols, rows))
+    let (w, h) = r.frame_size(cols, rows);
+    let px = card.font_px.unwrap_or(default_px);
+    Ok(r.render_card(w, h, &lines, fg, bg, card.bold, card.border, px))
 }

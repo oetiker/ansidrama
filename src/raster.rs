@@ -131,6 +131,102 @@ impl Renderer {
         img
     }
 
+    /// Render a "silent-movie" title card directly at `w × h`, independent of the
+    /// terminal cell size: a solid `bg` panel with a double-line frame and the
+    /// `lines` centered (both axes) at `card_px` — so cards can use a larger,
+    /// readable font than the small terminal capture. Frames stay `w × h` so they
+    /// sit in the same animation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_card(
+        &self,
+        w: u32,
+        h: u32,
+        lines: &[String],
+        fg: Rgb,
+        bg: Rgb,
+        bold: bool,
+        border: bool,
+        card_px: f32,
+    ) -> RgbaImage {
+        let card_px = card_px.max(6.0);
+        let mut img = RgbaImage::from_pixel(w, h, Rgba([bg.0, bg.1, bg.2, 255]));
+        let font = if bold { &self.bold } else { &self.regular };
+        let scaled = font.as_scaled(PxScale::from(card_px));
+        let adv = scaled.h_advance(font.glyph_id('M'));
+        let asc = scaled.ascent();
+        let line_h = asc - scaled.descent();
+        let scale = PxScale::from(card_px);
+
+        if border && w > 8 && h > 8 {
+            let inset = (card_px * 0.6).round() as i32;
+            let gap = (card_px * 0.14).round().max(2.0) as i32;
+            let t = (card_px / 20.0).round().max(1.0) as i32;
+            rect_outline(
+                &mut img,
+                inset,
+                inset,
+                w as i32 - inset,
+                h as i32 - inset,
+                t,
+                fg,
+            );
+            rect_outline(
+                &mut img,
+                inset + gap,
+                inset + gap,
+                w as i32 - inset - gap,
+                h as i32 - inset - gap,
+                t,
+                fg,
+            );
+        }
+
+        let block_h = lines.len() as f32 * line_h;
+        let top = (h as f32 - block_h) / 2.0;
+        for (i, line) in lines.iter().enumerate() {
+            let text_w = line.chars().count() as f32 * adv;
+            let mut x = (w as f32 - text_w) / 2.0;
+            let baseline = top + i as f32 * line_h + asc;
+            for ch in line.chars() {
+                self.blit_glyph(&mut img, font, ch, x, baseline, scale, fg);
+                x += adv;
+            }
+        }
+        img
+    }
+
+    /// Draw one glyph, blending `fg` over whatever is already in the image.
+    #[allow(clippy::too_many_arguments)]
+    fn blit_glyph(
+        &self,
+        img: &mut RgbaImage,
+        font: &FontRef<'static>,
+        ch: char,
+        x: f32,
+        baseline: f32,
+        scale: PxScale,
+        fg: Rgb,
+    ) {
+        let glyph = font
+            .glyph_id(ch)
+            .with_scale_and_position(scale, ab_glyph::point(x, baseline));
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let b = outline.px_bounds();
+            let (iw, ih) = (img.width() as i32, img.height() as i32);
+            outline.draw(|gx, gy, coverage| {
+                let px = b.min.x as i32 + gx as i32;
+                let py = b.min.y as i32 + gy as i32;
+                if px < 0 || py < 0 || px >= iw || py >= ih {
+                    return;
+                }
+                let cur = img.get_pixel(px as u32, py as u32);
+                let under = (cur[0], cur[1], cur[2]);
+                let bl = blend(fg, under, coverage);
+                img.put_pixel(px as u32, py as u32, Rgba([bl.0, bl.1, bl.2, 255]));
+            });
+        }
+    }
+
     /// Paint a box-drawing line char as exact rectangles. `spec` is the weight of
     /// each arm `[up, right, down, left]` — 0 = none, 1 = single, 2 = double.
     fn draw_box(&self, img: &mut RgbaImage, x0: u32, y0: u32, spec: [u8; 4], fg: Rgb) {
@@ -296,6 +392,29 @@ fn box_spec(ch: char) -> Option<[u8; 4]> {
         '╫' => [2, 1, 2, 1],
         _ => return None,
     })
+}
+
+/// Draw a `t`-pixel-thick rectangle outline `[x0,x1) × [y0,y1)` in `color`.
+fn rect_outline(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, t: i32, color: Rgb) {
+    let c = Rgba([color.0, color.1, color.2, 255]);
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let mut put = |x: i32, y: i32| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            img.put_pixel(x as u32, y as u32, c);
+        }
+    };
+    for x in x0..x1 {
+        for k in 0..t {
+            put(x, y0 + k);
+            put(x, y1 - 1 - k);
+        }
+    }
+    for y in y0..y1 {
+        for k in 0..t {
+            put(x0 + k, y);
+            put(x1 - 1 - k, y);
+        }
+    }
 }
 
 /// Alpha-blend `fg` over `bg` by `coverage` (0..=1).

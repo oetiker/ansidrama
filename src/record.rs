@@ -61,6 +61,27 @@ fn line_cells(a: (u32, u32), b: (u32, u32)) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Ask tmux where the (visible) hardware cursor is — the app's text caret. `None`
+/// when the cursor is hidden. Coordinates are 0-based within the pane.
+fn query_caret() -> Option<(u32, u32)> {
+    let out = tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        SESSION,
+        "#{cursor_flag} #{cursor_x} #{cursor_y}",
+    ])
+    .ok()?;
+    let s = String::from_utf8_lossy(&out);
+    let mut it = s.split_whitespace();
+    if it.next()? != "1" {
+        return None; // cursor hidden
+    }
+    let x: u32 = it.next()?.parse().ok()?;
+    let y: u32 = it.next()?.parse().ok()?;
+    Some((x, y))
+}
+
 /// Drives the session and accumulates frames.
 struct Recorder<'a> {
     cfg: &'a RecordConfig,
@@ -69,6 +90,7 @@ struct Recorder<'a> {
     min_cs: u16,
     last_grid: Vec<Vec<Cell>>,
     last_mouse: Option<(u32, u32)>,
+    caret: Option<(u32, u32)>,
     frames: Vec<Frame>,
 }
 
@@ -80,28 +102,49 @@ impl<'a> Recorder<'a> {
             min_cs: min_hold_cs(cfg.max_fps),
             last_grid: vec![Vec::new()],
             last_mouse: None,
+            caret: None,
             cfg,
             frames: Vec::new(),
         }
     }
 
-    /// Capture the pane, keeping the coloured cell grid as the current state.
+    /// Capture the pane, keeping the coloured cell grid and the caret position.
     fn capture(&mut self) -> Result<()> {
         sleep(self.settle);
         let bytes = tmux(&["capture-pane", "-t", SESSION, "-e", "-p", "-N"])?;
         self.last_grid = parse_grid(&String::from_utf8_lossy(&bytes));
+        self.caret = query_caret();
         Ok(())
     }
 
-    /// Render the current grid (optionally with the pointer) and push a frame.
-    fn push(&mut self, cursor_at: Option<(u32, u32)>, hold_cs: u16) {
+    /// Render the current grid and push a frame. A frame with a mouse position
+    /// draws the pointer; otherwise (keyboard/typing frames) it draws the app's
+    /// text caret if the cursor is visible.
+    fn push(&mut self, mouse: Option<(u32, u32)>, hold_cs: u16) {
         let mut img: RgbaImage =
             self.renderer
                 .render(&self.last_grid, self.cfg.cols, self.cfg.rows);
         if self.cfg.cursor {
-            if let Some((x, y)) = cursor_at {
+            if let Some((x, y)) = mouse {
                 let (px, py) = self.renderer.cell_origin(x, y);
                 cursor::stamp(&mut img, px, py);
+            } else if let Some((cx, cy)) = self.caret {
+                let (px, py) = self.renderer.cell_origin(cx + 1, cy + 1);
+                let (cw, ch) = self.renderer.cell_size();
+                // Contrast the caret against the cell it sits on.
+                let bg = self
+                    .last_grid
+                    .get(cy as usize)
+                    .and_then(|r| r.get(cx as usize))
+                    .map(|c| c.bg)
+                    .unwrap_or((0, 0, 0));
+                let lum = bg.0 as u32 + bg.1 as u32 + bg.2 as u32;
+                let color = if lum > 384 {
+                    (20, 24, 28)
+                } else {
+                    (235, 235, 235)
+                };
+                cursor::caret(&mut img, px, py, cw, ch, color);
             }
         }
         self.frames.push(Frame {
@@ -112,7 +155,13 @@ impl<'a> Recorder<'a> {
 
     /// Push a synthetic card frame (does not disturb the captured terminal state).
     fn push_card(&mut self, card: &Card, hold_cs: u16) -> Result<()> {
-        let img = frame::render_card(&self.renderer, self.cfg.cols, self.cfg.rows, card)?;
+        let img = frame::render_card(
+            &self.renderer,
+            self.cfg.cols,
+            self.cfg.rows,
+            card,
+            self.cfg.card_font_px,
+        )?;
         self.frames.push(Frame {
             image: img,
             hold_cs: hold_cs.max(self.min_cs),

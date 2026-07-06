@@ -62,7 +62,9 @@ pub fn encode(
                     .with_context(|| format!("read frame {}", p.display()))?;
                 frame::render_ansi(&renderer, cfg.cols, cfg.rows, &ansi)
             }
-            FrameSource::Card(c) => frame::render_card(&renderer, cfg.cols, cfg.rows, c)?,
+            FrameSource::Card(c) => {
+                frame::render_card(&renderer, cfg.cols, cfg.rows, c, cfg.card_font_px)?
+            }
         };
         if let Some(d) = dump_png {
             let _ = image.save(d.join(format!("frame{i:02}.png")));
