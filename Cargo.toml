@@ -15,6 +15,7 @@ webp = "0.3"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+vt100 = { git = "https://github.com/Junyi-99/vt100-rust", branch = "deck", version = "0.16.2" }
 
 [profile.release]
 # Small, self-contained demo binary; box-glyph painting is not hot.
