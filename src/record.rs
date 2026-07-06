@@ -10,9 +10,20 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::config::{Action, RecordConfig};
+use crate::cursor;
 use crate::encode::{encode_webp, total_ms, Frame};
 use crate::frame;
 use crate::raster::Renderer;
+
+/// The cell a mouse action ends on (for the pointer overlay), if any.
+fn mouse_target(action: &Action<'_>) -> Option<(u32, u32)> {
+    match action {
+        Action::Click(c) => Some((c.x, c.y)),
+        Action::Drag(d) => Some((d.to[0], d.to[1])),
+        Action::Scroll(s) => Some((s.x, s.y)),
+        _ => None,
+    }
+}
 
 const SESSION: &str = "ansidrama_rec";
 
@@ -56,8 +67,12 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let (cols, rows) = (cfg.cols.to_string(), cfg.rows.to_string());
     let mut new_args: Vec<&str> =
         vec!["new-session", "-d", "-s", SESSION, "-x", &cols, "-y", &rows];
-    // Pass env via `-e KEY=VAL` (tmux ≥ 3.2). Keep the strings alive for the call.
-    let env_args: Vec<String> = cfg.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    // Pass env via `-e KEY=VAL` (tmux ≥ 3.2). Default COLORTERM=truecolor so the
+    // app emits 24-bit colour. Keep the strings alive for the call.
+    let mut env = cfg.env.clone();
+    env.entry("COLORTERM".to_string())
+        .or_insert_with(|| "truecolor".to_string());
+    let env_args: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
     for e in &env_args {
         new_args.push("-e");
         new_args.push(e);
@@ -66,6 +81,10 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     new_args.push("-lc");
     new_args.push(&launch);
     tmux(&new_args).context("tmux new-session")?;
+    // Tell tmux the virtual terminal is 24-bit-colour capable, so truecolor SGR
+    // survives into `capture-pane -e` (else it quantises to 256). Appended, so it
+    // does not clobber an existing terminal-overrides on a shared server.
+    let _ = tmux(&["set-option", "-ga", "terminal-overrides", ",*:RGB"]);
 
     let renderer = Renderer::new();
     let mut frames: Vec<Frame> = Vec::with_capacity(cfg.scenes.len());
@@ -77,12 +96,14 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     sleep(Duration::from_millis(cfg.startup_ms)); // settle the first paint
 
     for (i, scene) in cfg.scenes.iter().enumerate() {
-        let img = match scene.action()? {
+        let action = scene.action()?;
+        let mouse = mouse_target(&action);
+        let mut img = match &action {
             Action::Card(card) => {
                 // Synthetic frame — nothing sent to the terminal.
                 frame::render_card(&renderer, cfg.cols, cfg.rows, card)?
             }
-            action => {
+            _ => {
                 run_terminal_action(&action, cfg.key_delay_ms)?;
                 sleep(Duration::from_millis(cfg.settle_ms));
                 let captured = tmux(&["capture-pane", "-t", SESSION, "-e", "-p", "-N"])?;
@@ -94,6 +115,13 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
                 )
             }
         };
+        // Draw the pointer where the mouse acted, so click/drag/scroll read clearly.
+        if cfg.cursor {
+            if let Some((mx, my)) = mouse {
+                let (px, py) = renderer.cell_origin(mx, my);
+                cursor::stamp(&mut img, px, py);
+            }
+        }
         if let Some(d) = &dump_dir {
             let _ = img.save(d.join(format!("scene{i:02}.png")));
         }

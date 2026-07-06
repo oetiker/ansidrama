@@ -15,6 +15,7 @@ use anyhow::{bail, Context, Result};
 
 pub mod color;
 pub mod config;
+pub mod cursor;
 pub mod encode;
 pub mod frame;
 pub mod grid;

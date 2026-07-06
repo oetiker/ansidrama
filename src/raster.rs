@@ -66,6 +66,19 @@ impl Renderer {
         (self.cell_w * cols, self.cell_h * rows)
     }
 
+    /// Pixel size of one cell.
+    pub fn cell_size(&self) -> (u32, u32) {
+        (self.cell_w, self.cell_h)
+    }
+
+    /// Top-left pixel of a 1-based terminal cell `(col, row)`.
+    pub fn cell_origin(&self, col: u32, row: u32) -> (i32, i32) {
+        (
+            (col.saturating_sub(1) * self.cell_w) as i32,
+            (row.saturating_sub(1) * self.cell_h) as i32,
+        )
+    }
+
     /// Render one frame. `cols`/`rows` fix the image size so every frame in an
     /// animation has identical dimensions even if a captured row is short.
     pub fn render(&self, grid: &[Vec<Cell>], cols: u32, rows: u32) -> RgbaImage {

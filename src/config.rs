@@ -127,6 +127,9 @@ pub struct RecordConfig {
     /// Keys sent to quit the app after recording (e.g. `["M-x"]` or `["q"]`).
     #[serde(default)]
     pub quit_keys: Vec<String>,
+    /// Draw a mouse-pointer arrow on frames produced by click/drag/scroll scenes.
+    #[serde(default = "df_true")]
+    pub cursor: bool,
     #[serde(default, rename = "scene")]
     pub scenes: Vec<Scene>,
 }
