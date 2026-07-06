@@ -65,10 +65,32 @@ impl Card {
 pub struct EncodeConfig {
     pub cols: u32,
     pub rows: u32,
+    /// Font pixel size — sets the cell size and thus the output resolution.
+    #[serde(default = "default_font_px")]
+    pub font_px: f32,
+    /// Cap the animation frame rate (clamps each frame's minimum hold).
+    #[serde(default = "default_max_fps")]
+    pub max_fps: u32,
     #[serde(default)]
     pub out: Option<String>,
     #[serde(default, rename = "frame")]
     pub frames: Vec<FrameSpec>,
+}
+
+/// Default font pixel size — large enough to read comfortably in a README.
+pub fn default_font_px() -> f32 {
+    28.0
+}
+/// Default frame-rate cap.
+pub fn default_max_fps() -> u32 {
+    30
+}
+/// Minimum per-frame hold (centiseconds) implied by a frame-rate cap. `0` = no cap.
+pub fn min_hold_cs(max_fps: u32) -> u16 {
+    match max_fps {
+        0 => 1,
+        fps => 100u32.div_ceil(fps).max(1) as u16,
+    }
 }
 
 #[derive(Deserialize)]
@@ -110,6 +132,12 @@ pub struct RecordConfig {
     pub launch: String,
     pub cols: u32,
     pub rows: u32,
+    /// Font pixel size — sets the cell size and thus the output resolution.
+    #[serde(default = "default_font_px")]
+    pub font_px: f32,
+    /// Cap the animation frame rate (clamps each frame's minimum hold).
+    #[serde(default = "default_max_fps")]
+    pub max_fps: u32,
     #[serde(default)]
     pub out: Option<String>,
     /// Extra environment for the launched command.
@@ -118,16 +146,19 @@ pub struct RecordConfig {
     /// Milliseconds to wait after launch before the first capture.
     #[serde(default = "default_startup")]
     pub startup_ms: u64,
-    /// Milliseconds to wait after each key/mouse send.
-    #[serde(default = "default_key_delay")]
-    pub key_delay_ms: u64,
-    /// Milliseconds to let the frame settle before capturing.
+    /// Milliseconds to let the screen settle after an input before capturing.
     #[serde(default = "default_settle")]
     pub settle_ms: u64,
+    /// Default hold (centiseconds) for each per-key / per-typed-char frame.
+    #[serde(default = "default_type_cs")]
+    pub type_cs: u16,
+    /// Default hold (centiseconds) for each mouse-cursor-step frame.
+    #[serde(default = "default_move_cs")]
+    pub move_cs: u16,
     /// Keys sent to quit the app after recording (e.g. `["M-x"]` or `["q"]`).
     #[serde(default)]
     pub quit_keys: Vec<String>,
-    /// Draw a mouse-pointer arrow on frames produced by click/drag/scroll scenes.
+    /// Draw a mouse-pointer arrow on click/drag/scroll frames.
     #[serde(default = "df_true")]
     pub cursor: bool,
     #[serde(default, rename = "scene")]
@@ -137,18 +168,29 @@ pub struct RecordConfig {
 fn default_startup() -> u64 {
     900
 }
-fn default_key_delay() -> u64 {
-    300
-}
 fn default_settle() -> u64 {
-    420
+    350
+}
+fn default_type_cs() -> u16 {
+    9
+}
+fn default_move_cs() -> u16 {
+    4
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Scene {
+    /// Hold (centiseconds) for the FINAL frame of this scene — the pause on the
+    /// result. Intermediate per-event frames use `type_cs` / `move_cs`.
     #[serde(default = "df_hold")]
     pub hold_cs: u16,
+    /// Per-scene override of the typing (per-key / per-char) frame hold.
+    #[serde(default)]
+    pub type_cs: Option<u16>,
+    /// Per-scene override of the mouse-move frame hold.
+    #[serde(default)]
+    pub move_cs: Option<u16>,
     /// Named tmux keys (e.g. `"Down"`, `"Enter"`, `"C-F5"`) sent in order.
     #[serde(default)]
     pub keys: Option<Vec<String>>,

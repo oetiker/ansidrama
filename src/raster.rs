@@ -13,9 +13,6 @@ use crate::grid::Cell;
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
 const FONT_BOLD: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
 
-/// Font pixel size. 18px gives a crisp, readable terminal at ~2x zoom.
-const PX: f32 = 18.0;
-
 /// Fixed cell metrics + the loaded fonts, derived once and reused per frame.
 pub struct Renderer {
     regular: FontRef<'static>,
@@ -30,25 +27,22 @@ pub struct Renderer {
     ascent: f32,
 }
 
-impl Default for Renderer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Renderer {
-    pub fn new() -> Self {
+    /// Build a renderer at `px` font size. Larger `px` ⇒ larger cells ⇒ higher
+    /// output resolution. 18px is small-but-crisp; 28–32px reads well in a README.
+    pub fn new(px: f32) -> Self {
+        let px = px.max(6.0);
         let regular = FontRef::try_from_slice(FONT_REGULAR).expect("regular font parses");
         let bold = FontRef::try_from_slice(FONT_BOLD).expect("bold font parses");
-        let scaled = regular.as_scaled(PxScale::from(PX));
+        let scaled = regular.as_scaled(PxScale::from(px));
         let adv = scaled.h_advance(regular.glyph_id('M')); // monospace: one advance
         let asc = scaled.ascent();
         let line = asc - scaled.descent(); // descent is negative
         let cell_w = adv.round().max(1.0) as u32;
         let cell_h = line.round().max(1.0) as u32; // no line_gap — box-drawing must fill the cell
         let scale = PxScale {
-            x: PX * cell_w as f32 / adv,
-            y: PX * cell_h as f32 / line,
+            x: px * cell_w as f32 / adv,
+            y: px * cell_h as f32 / line,
         };
         let ascent = asc * cell_h as f32 / line;
         Renderer {

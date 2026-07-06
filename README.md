@@ -49,28 +49,33 @@ ansidrama encode demo.toml -o out.webp --dump-png frames/
 
 ```toml
 # record.toml
-launch = "myapp --config demo.toml"
-cols   = 100
-rows   = 30
-out    = "docs/demo/myapp.webp"
-env    = { COLORTERM = "truecolor" }
+launch  = "myapp --config demo.toml"
+cols    = 100
+rows    = 30
+font_px = 26              # bigger = crisper / larger output
+max_fps = 30              # clamp minimum frame duration
+type_cs = 8               # hold per key / typed char (centiseconds)
+move_cs = 3               # hold per mouse cell-step
+out     = "docs/demo/myapp.webp"
+env     = { COLORTERM = "truecolor" }
 quit_keys = ["C-c"]
 
 [[scene]]
 card    = { text = "A quick tour", fg = "#fef9c3" }
-hold_cs = 150
+hold_cs = 300             # cards want a long hold — time to read
 
 [[scene]]
-keys    = ["Down", "Down", "Enter"]
-hold_cs = 130
+keys    = ["Down", "Down", "Enter"]   # one frame captured PER key
+hold_cs = 100
 
 [[scene]]
 click   = { x = 10, y = 11 }          # friendly mouse — no escape codes
-hold_cs = 40
+hold_cs = 100
 
 [[scene]]
-drag    = { from = [18, 8], to = [44, 20], steps = 4 }
-hold_cs = 45
+drag    = { from = [18, 8], to = [44, 20] }   # animates one frame per cell
+type_cs = 4                                   # per-scene speed override
+hold_cs = 120
 ```
 
 ```sh
@@ -79,23 +84,35 @@ ansidrama record record.toml
 
 ## Scenes & frames
 
-A **scene** (record) or **frame** (encode) is one held image plus one action:
+Each `record` scene **expands into many frames** — one captured **per key**, **per
+typed character**, and **per mouse cell-step** — so keyboard and mouse actions play
+out step by step (a corner drag *animates* the resize; typing appears char by
+char). Cursor-only moves reuse the last capture; drags re-capture each step so live
+UI is shown.
 
 | Field    | Meaning |
 |----------|---------|
-| `hold_cs`| how long to hold the frame, in centiseconds (default 100 = 1s) |
-| `keys`   | named tmux keys sent in order, e.g. `["F10", "Down", "Enter"]` |
-| `text`   | a string typed literally, one character at a time |
-| `click`  | `{ x, y, button = "left" }` — press + release |
-| `drag`   | `{ from = [x,y], to = [x,y], steps = 4, button = "left" }` |
+| `keys`   | named tmux keys, one frame captured per key: `["F10", "Down", "Enter"]` |
+| `text`   | a string typed literally, one frame per character |
+| `click`  | `{ x, y, button = "left" }` — the pointer moves in, then press + release |
+| `drag`   | `{ from = [x,y], to = [x,y], button = "left" }` — one frame per cell |
 | `scroll` | `{ x, y, dir = "down", n = 3 }` |
 | `card`   | a title card (see below) — no terminal interaction |
 | `file`   | (encode only) path to a captured `.ansi` snapshot |
 
-Exactly one action per scene/frame. Coordinates are 1-based terminal columns/rows.
-Mouse actions are expanded to SGR (1006) mouse reports under the hood, so you
-never write `\x1b[<0;10;11M` by hand — but a raw escape in `keys` still works as
-an escape hatch.
+**Timing** (all centiseconds):
+
+| Field | Scope | Meaning |
+|-------|-------|---------|
+| `hold_cs` | per scene | hold on the **final** frame of the scene — the pause on the result |
+| `type_cs` | global + per-scene | hold per key / typed-char frame (typing speed) |
+| `move_cs` | global + per-scene | hold per mouse cell-step frame (pointer speed) |
+| `font_px` | global | font size → cell size → output resolution |
+| `max_fps` | global | clamps the minimum per-frame hold |
+
+Exactly one action per scene. Coordinates are 1-based terminal columns/rows. Mouse
+actions expand to SGR (1006) mouse reports under the hood, so you never write
+`\x1b[<0;10;11M` by hand — a raw escape in `keys` still works as an escape hatch.
 
 ## Title cards
 
@@ -120,15 +137,15 @@ cargo install --path .        # or: cargo build --release
 `record` needs **tmux ≥ 3.2** on `PATH` (for `-e` env passing). `encode` needs
 nothing but the binary. The font (JetBrains Mono, OFL) is bundled.
 
-## What it is not
+## How it compares
 
-This is a **deterministic slideshow of held frames**, not continuous-motion
-capture. Each scene sends its input, waits for the screen to settle, and grabs
-one frame. That makes runs reproducible and output tiny/sharp — great for menu
-and dialog tours — but it does not record smooth typing or scrolling *motion*.
-For that, reach for [VHS](https://github.com/charmbracelet/vhs) (headless
-browser + ffmpeg → GIF/MP4). `ansidrama` trades motion for determinism, crispness
-and a near-zero toolchain.
+`ansidrama` captures a frame **per input event** (each key, char, and mouse
+cell-step), so it animates typing, navigation and drags step by step — but each
+frame is a settled screen grab, not a real-time video. Every run is
+**deterministic** (same script → same bytes) and the output is **lossless, crisp
+and small**. For true real-time video with a headless browser and ffmpeg →
+GIF/MP4, reach for [VHS](https://github.com/charmbracelet/vhs); `ansidrama` trades
+that for determinism, sharpness and a near-zero toolchain (just `tmux`).
 
 ## License
 

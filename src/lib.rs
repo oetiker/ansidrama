@@ -51,7 +51,8 @@ pub fn encode(
     if let Some(d) = dump_png {
         std::fs::create_dir_all(d).ok();
     }
-    let renderer = Renderer::new();
+    let renderer = Renderer::new(cfg.font_px);
+    let min_cs = crate::config::min_hold_cs(cfg.max_fps);
     let mut frames: Vec<Frame> = Vec::with_capacity(cfg.frames.len());
     for (i, spec) in cfg.frames.iter().enumerate() {
         let image = match spec.source()? {
@@ -68,7 +69,7 @@ pub fn encode(
         }
         frames.push(Frame {
             image,
-            hold_cs: spec.hold_cs,
+            hold_cs: spec.hold_cs.max(min_cs),
         });
     }
 

@@ -1,6 +1,8 @@
-//! The `record` command: drive a command in a detached tmux session, run the
-//! scene script (keys / typed text / friendly mouse / cards), capture one
-//! coloured frame per scene, rasterize, and encode an animated WebP.
+//! The `record` command: drive a command in a detached tmux session and turn a
+//! scene script into an animation. Each scene expands into many frames — one per
+//! key, one per typed character, one per mouse-cursor cell-step — so keyboard and
+//! mouse actions play out step by step. Cursor-only moves reuse the last capture;
+//! drags re-capture each step so live UI (e.g. a resize preview) is shown.
 
 use std::path::Path;
 use std::process::Command;
@@ -8,22 +10,15 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use image::RgbaImage;
 
-use crate::config::{Action, RecordConfig};
+use crate::config::{min_hold_cs, Action, Card, RecordConfig, Scene};
 use crate::cursor;
 use crate::encode::{encode_webp, total_ms, Frame};
 use crate::frame;
+use crate::grid::{parse_grid, Cell};
+use crate::mouse::{Button, Scroll};
 use crate::raster::Renderer;
-
-/// The cell a mouse action ends on (for the pointer overlay), if any.
-fn mouse_target(action: &Action<'_>) -> Option<(u32, u32)> {
-    match action {
-        Action::Click(c) => Some((c.x, c.y)),
-        Action::Drag(d) => Some((d.to[0], d.to[1])),
-        Action::Scroll(s) => Some((s.x, s.y)),
-        _ => None,
-    }
-}
 
 const SESSION: &str = "ansidrama_rec";
 
@@ -49,6 +44,193 @@ fn send(token: &str) -> Result<()> {
 /// Send raw bytes to the pane (`send-keys -l`) — for mouse reports and typed text.
 fn send_literal(token: &str) -> Result<()> {
     tmux(&["send-keys", "-t", SESSION, "-l", token]).map(|_| ())
+}
+
+/// Cells along the straight line from `a` to `b`, one per step, excluding `a` and
+/// including `b` (empty if `a == b`).
+fn line_cells(a: (u32, u32), b: (u32, u32)) -> Vec<(u32, u32)> {
+    let (x0, y0) = (a.0 as i64, a.1 as i64);
+    let (x1, y1) = (b.0 as i64, b.1 as i64);
+    let steps = (x1 - x0).abs().max((y1 - y0).abs());
+    (1..=steps)
+        .map(|i| {
+            let x = x0 + (x1 - x0) * i / steps;
+            let y = y0 + (y1 - y0) * i / steps;
+            (x as u32, y as u32)
+        })
+        .collect()
+}
+
+/// Drives the session and accumulates frames.
+struct Recorder<'a> {
+    cfg: &'a RecordConfig,
+    renderer: Renderer,
+    settle: Duration,
+    min_cs: u16,
+    last_grid: Vec<Vec<Cell>>,
+    last_mouse: Option<(u32, u32)>,
+    frames: Vec<Frame>,
+}
+
+impl<'a> Recorder<'a> {
+    fn new(cfg: &'a RecordConfig) -> Self {
+        Recorder {
+            renderer: Renderer::new(cfg.font_px),
+            settle: Duration::from_millis(cfg.settle_ms),
+            min_cs: min_hold_cs(cfg.max_fps),
+            last_grid: vec![Vec::new()],
+            last_mouse: None,
+            cfg,
+            frames: Vec::new(),
+        }
+    }
+
+    /// Capture the pane, keeping the coloured cell grid as the current state.
+    fn capture(&mut self) -> Result<()> {
+        sleep(self.settle);
+        let bytes = tmux(&["capture-pane", "-t", SESSION, "-e", "-p", "-N"])?;
+        self.last_grid = parse_grid(&String::from_utf8_lossy(&bytes));
+        Ok(())
+    }
+
+    /// Render the current grid (optionally with the pointer) and push a frame.
+    fn push(&mut self, cursor_at: Option<(u32, u32)>, hold_cs: u16) {
+        let mut img: RgbaImage =
+            self.renderer
+                .render(&self.last_grid, self.cfg.cols, self.cfg.rows);
+        if self.cfg.cursor {
+            if let Some((x, y)) = cursor_at {
+                let (px, py) = self.renderer.cell_origin(x, y);
+                cursor::stamp(&mut img, px, py);
+            }
+        }
+        self.frames.push(Frame {
+            image: img,
+            hold_cs: hold_cs.max(self.min_cs),
+        });
+    }
+
+    /// Push a synthetic card frame (does not disturb the captured terminal state).
+    fn push_card(&mut self, card: &Card, hold_cs: u16) -> Result<()> {
+        let img = frame::render_card(&self.renderer, self.cfg.cols, self.cfg.rows, card)?;
+        self.frames.push(Frame {
+            image: img,
+            hold_cs: hold_cs.max(self.min_cs),
+        });
+        Ok(())
+    }
+
+    /// Animate the pointer moving from its last position to `target` over the
+    /// current (unchanged) screen — one frame per cell. Leaves `last_mouse` set.
+    fn move_to(&mut self, target: (u32, u32), move_cs: u16) {
+        if let Some(from) = self.last_mouse {
+            for cell in line_cells(from, target) {
+                self.push(Some(cell), move_cs);
+            }
+        }
+        self.last_mouse = Some(target);
+    }
+
+    fn process(&mut self, scene: &Scene) -> Result<()> {
+        let type_cs = scene.type_cs.unwrap_or(self.cfg.type_cs);
+        let move_cs = scene.move_cs.unwrap_or(self.cfg.move_cs);
+        let hold_cs = scene.hold_cs;
+        match scene.action()? {
+            Action::Card(card) => self.push_card(card, hold_cs)?,
+
+            Action::Keys(keys) => {
+                if keys.is_empty() {
+                    // "Hold the current screen" — capture once.
+                    self.capture()?;
+                    self.push(None, hold_cs);
+                } else {
+                    let last = keys.len() - 1;
+                    for (i, k) in keys.iter().enumerate() {
+                        send(k)?;
+                        self.capture()?;
+                        self.push(None, if i == last { hold_cs } else { type_cs });
+                    }
+                }
+            }
+
+            Action::Text(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let last = chars.len().saturating_sub(1);
+                for (i, c) in chars.iter().enumerate() {
+                    send_literal(&c.to_string())?;
+                    self.capture()?;
+                    self.push(None, if i == last { hold_cs } else { type_cs });
+                }
+            }
+
+            Action::Click(c) => {
+                let at = (c.x, c.y);
+                let b = c.button;
+                self.move_to(at, move_cs);
+                send(&sgr(b, at, true))?; // press
+                self.capture()?;
+                self.push(Some(at), move_cs);
+                send(&sgr(b, at, false))?; // release
+                self.capture()?;
+                self.push(Some(at), hold_cs);
+            }
+
+            Action::Drag(d) => {
+                let from = (d.from[0], d.from[1]);
+                let to = (d.to[0], d.to[1]);
+                let b = d.button;
+                self.move_to(from, move_cs);
+                send(&sgr(b, from, true))?; // press
+                self.capture()?;
+                self.push(Some(from), move_cs);
+                for cell in line_cells(from, to) {
+                    send(&sgr_motion(b, cell))?; // drag with button held
+                    self.capture()?;
+                    self.push(Some(cell), move_cs);
+                }
+                send(&sgr(b, to, false))?; // release
+                self.capture()?;
+                self.push(Some(to), hold_cs);
+                self.last_mouse = Some(to);
+            }
+
+            Action::Scroll(s) => {
+                let at = (s.x, s.y);
+                self.move_to(at, move_cs);
+                let seqs = scroll_sequences(s);
+                let last = seqs.len().saturating_sub(1);
+                for (i, seq) in seqs.iter().enumerate() {
+                    send(seq)?;
+                    self.capture()?;
+                    self.push(Some(at), if i == last { hold_cs } else { move_cs });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// SGR press/release for `button` at 1-based `(x, y)`.
+fn sgr(b: Button, at: (u32, u32), press: bool) -> String {
+    let code = match b {
+        Button::Left => 0,
+        Button::Middle => 1,
+        Button::Right => 2,
+    };
+    let end = if press { 'M' } else { 'm' };
+    format!("\x1b[<{code};{};{}{end}", at.0, at.1)
+}
+/// SGR drag motion (button held → +32) at `(x, y)`.
+fn sgr_motion(b: Button, at: (u32, u32)) -> String {
+    let code = match b {
+        Button::Left => 0,
+        Button::Middle => 1,
+        Button::Right => 2,
+    } + 32;
+    format!("\x1b[<{code};{};{}M", at.0, at.1)
+}
+fn scroll_sequences(s: &Scroll) -> Vec<String> {
+    s.sequences()
 }
 
 pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Path>) -> Result<()> {
@@ -86,50 +268,21 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     // does not clobber an existing terminal-overrides on a shared server.
     let _ = tmux(&["set-option", "-ga", "terminal-overrides", ",*:RGB"]);
 
-    let renderer = Renderer::new();
-    let mut frames: Vec<Frame> = Vec::with_capacity(cfg.scenes.len());
-    let dump_dir = dump_png.map(Path::to_path_buf);
-    if let Some(d) = &dump_dir {
-        std::fs::create_dir_all(d).ok();
-    }
-
     sleep(Duration::from_millis(cfg.startup_ms)); // settle the first paint
 
+    let mut rec = Recorder::new(&cfg);
+    let _ = rec.capture(); // seed the current grid
     for (i, scene) in cfg.scenes.iter().enumerate() {
-        let action = scene.action()?;
-        let mouse = mouse_target(&action);
-        let mut img = match &action {
-            Action::Card(card) => {
-                // Synthetic frame — nothing sent to the terminal.
-                frame::render_card(&renderer, cfg.cols, cfg.rows, card)?
-            }
-            _ => {
-                run_terminal_action(&action, cfg.key_delay_ms)?;
-                sleep(Duration::from_millis(cfg.settle_ms));
-                let captured = tmux(&["capture-pane", "-t", SESSION, "-e", "-p", "-N"])?;
-                frame::render_ansi(
-                    &renderer,
-                    cfg.cols,
-                    cfg.rows,
-                    &String::from_utf8_lossy(&captured),
-                )
-            }
-        };
-        // Draw the pointer where the mouse acted, so click/drag/scroll read clearly.
-        if cfg.cursor {
-            if let Some((mx, my)) = mouse {
-                let (px, py) = renderer.cell_origin(mx, my);
-                cursor::stamp(&mut img, px, py);
-            }
+        rec.process(scene)?;
+        eprintln!("  scene {i:02} → {} frames total", rec.frames.len());
+    }
+
+    // Optional per-frame PNG dump for inspection.
+    if let Some(d) = dump_png {
+        std::fs::create_dir_all(d).ok();
+        for (i, f) in rec.frames.iter().enumerate() {
+            let _ = f.image.save(d.join(format!("frame{i:04}.png")));
         }
-        if let Some(d) = &dump_dir {
-            let _ = img.save(d.join(format!("scene{i:02}.png")));
-        }
-        frames.push(Frame {
-            image: img,
-            hold_cs: scene.hold_cs,
-        });
-        eprintln!("  scene {i:02} captured");
     }
 
     // Quit the app and tear down the session.
@@ -138,46 +291,18 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     }
     let _ = tmux(&["kill-session", "-t", SESSION]);
 
-    let webp = encode_webp(&frames)?;
+    let webp = encode_webp(&rec.frames)?;
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(&out_path, &webp).with_context(|| format!("write {}", out_path.display()))?;
-    let (w, h) = frames[0].image.dimensions();
+    let (w, h) = rec.frames[0].image.dimensions();
     eprintln!(
-        "OK: wrote {} ({} scenes, {w}x{h}px, {:.1}s loop)",
+        "OK: wrote {} ({} frames, {w}x{h}px, {:.1}s loop)",
         out_path.display(),
-        frames.len(),
-        total_ms(&frames) as f32 / 1000.0
+        rec.frames.len(),
+        total_ms(&rec.frames) as f32 / 1000.0
     );
-    Ok(())
-}
-
-/// Send a scene's terminal action (everything except a card), pausing
-/// `key_delay_ms` between tokens.
-fn run_terminal_action(action: &Action<'_>, key_delay_ms: u64) -> Result<()> {
-    match action {
-        // Typed text goes out literally, one character at a time.
-        Action::Text(s) => {
-            for c in s.chars() {
-                send_literal(&c.to_string())?;
-                sleep(Duration::from_millis(key_delay_ms));
-            }
-        }
-        _ => {
-            let tokens: Vec<String> = match action {
-                Action::Keys(keys) => keys.to_vec(),
-                Action::Click(c) => c.sequences(),
-                Action::Drag(d) => d.sequences(),
-                Action::Scroll(s) => s.sequences(),
-                Action::Text(_) | Action::Card(_) => unreachable!(),
-            };
-            for t in &tokens {
-                send(t)?;
-                sleep(Duration::from_millis(key_delay_ms));
-            }
-        }
-    }
     Ok(())
 }
 
