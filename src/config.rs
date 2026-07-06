@@ -149,7 +149,7 @@ impl FrameSpec {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordConfig {
-    /// Shell command line launched inside the tmux pane.
+    /// Shell command line launched inside the embedded terminal.
     pub launch: String,
     pub cols: u32,
     pub rows: u32,
