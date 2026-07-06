@@ -23,6 +23,7 @@ pub mod keys;
 pub mod mouse;
 pub mod raster;
 pub mod record;
+pub mod term;
 
 use crate::config::{EncodeConfig, FrameSource};
 use crate::encode::{encode_webp, total_ms, Frame};
