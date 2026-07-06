@@ -19,6 +19,7 @@ pub mod cursor;
 pub mod encode;
 pub mod frame;
 pub mod grid;
+pub mod keys;
 pub mod mouse;
 pub mod raster;
 pub mod record;
