@@ -79,6 +79,7 @@ impl Renderer {
 
     /// Blit `text` starting at pixel `(x, baseline)`, each glyph at `px` scale in
     /// `color`, advancing by the monospace advance. Blends over existing pixels.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_text(
         &self,
         img: &mut RgbaImage,
