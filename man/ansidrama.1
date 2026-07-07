@@ -1,0 +1,124 @@
+.TH ANSIDRAMA 1 "2026-07-07" "ansidrama" "User Commands"
+.SH NAME
+ansidrama \- assemble or record a terminal session into a crisp animated WebP
+.SH SYNOPSIS
+.B ansidrama encode
+.I config.toml
+.RB [ \-o
+.IR out.webp ]
+.RB [ \-\-dump\-png
+.IR dir ]
+.br
+.B ansidrama record
+.I config.toml
+.RB [ \-o
+.IR out.webp ]
+.RB [ \-\-dump\-png
+.IR dir ]
+.SH DESCRIPTION
+AnsiDrama
+turns a terminal session into a small, lossless, looping animated WebP.
+It renders each frame itself \(em parsing the terminal cell grid and
+rasterizing it with a bundled monospace font, hand\-painting box\-drawing and
+block glyphs so characters reach the exact cell edges and tile seamlessly.
+Every run is deterministic: the same script produces the same bytes. There are
+no runtime dependencies \(em a single static binary, no browser, no ffmpeg, no
+tmux.
+.SH COMMANDS
+.TP
+.B encode
+Assemble a WebP from a list of captured ANSI snapshots and/or synthetic title
+cards, each held for a duration.
+.TP
+.B record
+Drive a command inside an embedded terminal (a PTY plus a VT parser) per a
+scene script, capturing one frame per key, per typed character, and per mouse
+cell\-step.
+.B record
+is available on unix platforms only.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-out " " \fIpath\fR
+Output WebP path. Overrides the
+.B out
+key in the config.
+.TP
+.BR \-\-dump\-png " " \fIdir\fR
+Also write each rendered frame as a PNG into
+.I dir
+(for debugging).
+.SH CONFIGURATION
+Configuration is TOML. The
+.B out
+key is resolved relative to the config file's directory.
+.SS "encode config"
+Top level:
+.BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
+.BR max_fps ", " out .
+Each
+.B [[frame]]
+has either
+.B file
+(path to a captured
+.I .ansi
+snapshot, relative to the config) or
+.B card
+(a title card), plus
+.B hold_cs
+(hold in centiseconds).
+.SS "record config"
+Top level:
+.BR launch " (the shell command line), "
+.BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
+.BR max_fps ", " out ", " env ", " startup_ms ", " settle_ms ", " type_cs ", "
+.BR move_cs ", " quit_keys ", " cursor .
+Each
+.B [[scene]]
+performs exactly one action \(em
+.BR keys ", " text ", " click ", " drag ", " scroll ", or " card " \(em"
+plus timing
+.RB ( hold_cs ", " type_cs ", " move_cs ).
+A scene expands into many frames: one captured per key, per typed character,
+and per mouse cell\-step.
+.SS "title cards"
+A
+.B card
+is a silent\-movie intertitle:
+.BR text " (or " lines "), " fg ", " bg ", " bold ", " border ", " font_px ", " subtitle_px .
+Colours are \fI#rrggbb\fR, \fI#rgb\fR, or a basic name (black white red green
+blue yellow grey).
+.SH "KEY NAMES"
+Named keys accepted in a scene's
+.B keys
+list (tmux\-style):
+.B Enter Return Tab BTab Escape Esc Space BSpace Backspace Up Down Right Left
+.B Home End PageUp PPage PageDown NPage Insert IC Delete DC F1\-F12 .
+Modifiers:
+.BR C- " (control), " M- " (meta/alt), " S- " (shift) \(em e.g. " C-c ", " M-x ", " S-Tab .
+A single character is sent literally; a value beginning with ESC passes through
+as a raw escape sequence.
+.SH EXAMPLES
+Assemble frames listed in a config into a WebP:
+.PP
+.RS
+.EX
+ansidrama encode demo.toml \-o out.webp
+.EE
+.RE
+.PP
+Record an app, dumping each frame as a PNG for inspection:
+.PP
+.RS
+.EX
+ansidrama record record.toml \-\-dump\-png frames/
+.EE
+.RE
+.SH FILES
+The output WebP (from
+.BR \-o " or the " out " config key). With " \-\-dump\-png ", one PNG per frame."
+.SH AUTHOR
+Tobias Oetiker <tobi@oetiker.ch>
+.SH LICENSE
+MIT. The bundled JetBrains Mono font is under the SIL Open Font License.
+.SH "SEE ALSO"
+Project home: https://github.com/oetiker/ansidrama

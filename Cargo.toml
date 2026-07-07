@@ -7,6 +7,8 @@ license = "MIT"
 readme = "README.md"
 keywords = ["terminal", "webp", "screencast", "demo", "tui"]
 categories = ["command-line-utilities", "multimedia::images"]
+repository = "https://github.com/oetiker/ansidrama"
+homepage = "https://github.com/oetiker/ansidrama"
 
 [dependencies]
 ab_glyph = "0.2"
@@ -22,3 +24,33 @@ rustix-openpty = "0.2"
 [profile.release]
 # Small, self-contained demo binary; box-glyph painting is not hot.
 opt-level = 2
+# Strip at build time so cross-arch packaging never needs a matching `strip`.
+strip = true
+
+[package.metadata.deb]
+maintainer = "Tobias Oetiker <tobi@oetiker.ch>"
+copyright = "2026, Tobias Oetiker <tobi@oetiker.ch>"
+license-file = ["LICENSE-MIT", "0"]
+extended-description = """\
+Turn a terminal session into a crisp, tiny, animated WebP. ansidrama assembles \
+captured ANSI snapshots and silent-movie title cards (encode), or drives a \
+command in an embedded terminal and captures each frame (record). Deterministic, \
+lossless, and dependency-free: a single static binary."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/ansidrama", "usr/bin/", "755"],
+    ["man/ansidrama.1", "usr/share/man/man1/", "644"],
+    ["README.md", "usr/share/doc/ansidrama/README.md", "644"],
+    ["LICENSE-MIT", "usr/share/doc/ansidrama/LICENSE-MIT", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Assemble or record a terminal session into a crisp animated WebP"
+license = "MIT"
+assets = [
+    { source = "target/release/ansidrama", dest = "/usr/bin/ansidrama", mode = "755" },
+    { source = "man/ansidrama.1", dest = "/usr/share/man/man1/ansidrama.1", mode = "644", doc = true },
+    { source = "README.md", dest = "/usr/share/doc/ansidrama/README.md", mode = "644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/doc/ansidrama/LICENSE-MIT", mode = "644", doc = true },
+]

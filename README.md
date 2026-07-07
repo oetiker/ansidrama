@@ -1,10 +1,19 @@
-# ansidrama
+# AnsiDrama
+
+[![CI](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml/badge.svg)](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml)
+
+![AnsiDrama records itself](docs/demo/ansidrama.webp)
+
+That trailer is itself an AnsiDrama recording — in it you can watch `ansidrama
+record hello.toml` run for real. Here is the little WebP that command produces:
+
+![the WebP the trailer just recorded](docs/demo/hello.webp)
 
 Turn a terminal session into a crisp, tiny, **animated WebP** — scripted scenes,
 silent-movie title cards, deterministic frames. No browser, no ffmpeg, no
 asciinema, no runtime dependencies — a single static binary.
 
-`ansidrama` renders each frame itself: it parses the terminal's ANSI cell grid
+AnsiDrama renders each frame itself: it parses the terminal's ANSI cell grid
 and rasterizes it with a bundled monospace font, hand-painting box-drawing and
 block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
@@ -135,6 +144,31 @@ yellow grey`). `border` (default `true`) draws the frame.
 
 ## Install
 
+**Prebuilt binaries** (Linux static-musl x86_64/aarch64, macOS x86_64/aarch64) —
+download the tarball for your platform from the
+[Releases page](https://github.com/oetiker/ansidrama/releases), unpack, and put
+`ansidrama` on your `PATH`:
+
+```sh
+tar xzf ansidrama-*-x86_64-unknown-linux-musl.tar.gz
+sudo install ansidrama/ansidrama /usr/local/bin/
+```
+
+**Debian/Ubuntu** — grab the `.deb` from the release and:
+
+```sh
+sudo dpkg -i ansidrama_*_amd64.deb
+man ansidrama
+```
+
+**Fedora/RHEL/openSUSE** — grab the `.rpm` and:
+
+```sh
+sudo rpm -i ansidrama-*.x86_64.rpm
+```
+
+**From source:**
+
 ```sh
 cargo install --path .        # or: cargo build --release
 ```
@@ -144,12 +178,12 @@ the binary** — same as `encode`. The font (JetBrains Mono, OFL) is bundled.
 
 ## How it compares
 
-`ansidrama` captures a frame **per input event** (each key, char, and mouse
+AnsiDrama captures a frame **per input event** (each key, char, and mouse
 cell-step), so it animates typing, navigation and drags step by step — but each
 frame is a settled screen grab, not a real-time video. Every run is
 **deterministic** (same script → same bytes) and the output is **lossless, crisp
 and small**. For true real-time video with a headless browser and ffmpeg →
-GIF/MP4, reach for [VHS](https://github.com/charmbracelet/vhs); `ansidrama` trades
+GIF/MP4, reach for [VHS](https://github.com/charmbracelet/vhs); AnsiDrama trades
 that for determinism, sharpness and a zero-dependency single binary.
 
 ## License
