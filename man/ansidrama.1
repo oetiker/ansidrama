@@ -87,6 +87,14 @@ is a silent\-movie intertitle:
 .BR text " (or " lines "), " fg ", " bg ", " bold ", " border ", " font_px ", " subtitle_px .
 Colours are \fI#rrggbb\fR, \fI#rgb\fR, or a basic name (black white red green
 blue yellow grey).
+.SS "window chrome"
+An optional
+.B [chrome]
+table (in either config) draws window chrome and padding around the screen:
+.BR style " (" none ", " macos ", " linux "), " title ", " padding ", " bar ", " text .
+.BR style " " macos " gives macOS traffic-light dots and a centered title;"
+.BR linux " gives a single close button and a left title;"
+.BR padding " insets the cells with the terminal background (works with " none ")."
 .SH "KEY NAMES"
 Named keys accepted in a scene's
 .B keys

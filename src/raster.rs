@@ -65,6 +65,40 @@ impl Renderer {
         (self.cell_w, self.cell_h)
     }
 
+    /// `(width, ascent, line_height)` of `text` at `px`, in this font's metrics.
+    /// Monospace: width is `char_count · advance`.
+    pub fn text_extents(&self, text: &str, px: f32) -> (f32, f32, f32) {
+        let s = self.regular.as_scaled(PxScale::from(px));
+        let adv = s.h_advance(self.regular.glyph_id('M'));
+        (
+            text.chars().count() as f32 * adv,
+            s.ascent(),
+            s.ascent() - s.descent(),
+        )
+    }
+
+    /// Blit `text` starting at pixel `(x, baseline)`, each glyph at `px` scale in
+    /// `color`, advancing by the monospace advance. Blends over existing pixels.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text(
+        &self,
+        img: &mut RgbaImage,
+        x: f32,
+        baseline: f32,
+        text: &str,
+        px: f32,
+        color: Rgb,
+        bold: bool,
+    ) {
+        let font = if bold { &self.bold } else { &self.regular };
+        let adv = font.as_scaled(PxScale::from(px)).h_advance(font.glyph_id('M'));
+        let mut cx = x;
+        for ch in text.chars() {
+            self.blit_glyph(img, font, ch, cx, baseline, PxScale::from(px), color);
+            cx += adv;
+        }
+    }
+
     /// Top-left pixel of a 1-based terminal cell `(col, row)`.
     pub fn cell_origin(&self, col: u32, row: u32) -> (i32, i32) {
         (
@@ -484,4 +518,29 @@ fn blend(fg: Rgb, bg: Rgb, a: f32) -> Rgb {
             .clamp(0.0, 255.0) as u8
     };
     (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draw_text_marks_pixels() {
+        let r = Renderer::new(20.0);
+        let mut img = RgbaImage::from_pixel(200, 40, Rgba([255, 255, 255, 255]));
+        r.draw_text(&mut img, 2.0, 28.0, "Hello", 18.0, (0, 0, 0), false);
+        assert!(
+            img.pixels().any(|p| p[0] < 200),
+            "text should darken some pixels"
+        );
+    }
+
+    #[test]
+    fn text_extents_scale_with_length() {
+        let r = Renderer::new(20.0);
+        let (w1, _, _) = r.text_extents("M", 18.0);
+        let (w2, _, _) = r.text_extents("MM", 18.0);
+        assert!(w1 > 0.0);
+        assert!((w2 - 2.0 * w1).abs() < 0.01);
+    }
 }

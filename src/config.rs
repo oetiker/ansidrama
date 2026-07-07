@@ -17,6 +17,12 @@ fn df_hold() -> u16 {
 fn df_true() -> bool {
     true
 }
+fn default_chrome_bar() -> String {
+    "#2b2b2b".into()
+}
+fn default_chrome_text() -> String {
+    "#d0d0d0".into()
+}
 
 /// A synthetic "silent-movie" title card.
 #[derive(Deserialize)]
@@ -64,6 +70,39 @@ impl Card {
     }
 }
 
+/// Window-chrome style drawn around the terminal screen area.
+#[derive(Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChromeStyle {
+    /// No title bar — padding only (or nothing).
+    #[default]
+    None,
+    /// macOS: three traffic-light dots top-left, title centered.
+    Macos,
+    /// Generic Linux: a single close button top-right, title left-aligned.
+    Linux,
+}
+
+/// Optional window chrome + padding around the cell grid. Absent ⇒ no change.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ChromeConfig {
+    #[serde(default)]
+    pub style: ChromeStyle,
+    /// Title shown in the bar (empty ⇒ blank bar).
+    #[serde(default)]
+    pub title: String,
+    /// Terminal-bg-filled inset (px) around the cells (works even with style "none").
+    #[serde(default)]
+    pub padding: u32,
+    /// Title-bar color.
+    #[serde(default = "default_chrome_bar")]
+    pub bar: String,
+    /// Title-text (and Linux close-glyph) color.
+    #[serde(default = "default_chrome_text")]
+    pub text: String,
+}
+
 // --- encode -----------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -85,6 +124,8 @@ pub struct EncodeConfig {
     pub max_fps: u32,
     #[serde(default)]
     pub out: Option<String>,
+    #[serde(default)]
+    pub chrome: Option<ChromeConfig>,
     #[serde(default, rename = "frame")]
     pub frames: Vec<FrameSpec>,
 }
@@ -167,6 +208,8 @@ pub struct RecordConfig {
     pub max_fps: u32,
     #[serde(default)]
     pub out: Option<String>,
+    #[serde(default)]
+    pub chrome: Option<ChromeConfig>,
     /// Extra environment for the launched command.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -347,5 +390,66 @@ mod tests {
             cfg.frames[1].source().unwrap(),
             FrameSource::Card(_)
         ));
+    }
+
+    #[test]
+    fn parse_encode_chrome() {
+        let cfg: EncodeConfig = toml::from_str(
+            r##"
+            cols = 80
+            rows = 24
+            [chrome]
+            style = "macos"
+            title = "hello.sh"
+            padding = 12
+            [[frame]]
+            file = "0.ansi"
+            "##,
+        )
+        .unwrap();
+        let ch = cfg.chrome.unwrap();
+        assert_eq!(ch.style, ChromeStyle::Macos);
+        assert_eq!(ch.title, "hello.sh");
+        assert_eq!(ch.padding, 12);
+        assert_eq!(ch.bar, "#2b2b2b"); // default
+        assert_eq!(ch.text, "#d0d0d0"); // default
+    }
+
+    #[test]
+    fn parse_record_chrome_linux() {
+        let cfg: RecordConfig = toml::from_str(
+            r##"
+            launch = "x"
+            cols = 1
+            rows = 1
+            [chrome]
+            style = "linux"
+            "##,
+        )
+        .unwrap();
+        assert_eq!(cfg.chrome.unwrap().style, ChromeStyle::Linux);
+    }
+
+    #[test]
+    fn chrome_absent_is_none_option() {
+        let cfg: EncodeConfig =
+            toml::from_str("cols = 1\nrows = 1\n[[frame]]\ncard = { text = \"x\" }").unwrap();
+        assert!(cfg.chrome.is_none());
+    }
+
+    #[test]
+    fn chrome_rejects_unknown_key() {
+        let e: Result<EncodeConfig, _> = toml::from_str(
+            r##"
+            cols = 1
+            rows = 1
+            [chrome]
+            style = "macos"
+            bogus = 1
+            [[frame]]
+            card = { text = "x" }
+            "##,
+        );
+        assert!(e.is_err());
     }
 }
