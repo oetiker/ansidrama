@@ -142,6 +142,28 @@ card = { lines = ["Chapter one", "the directory tree"] }
 Colours are `#rrggbb`, `#rgb`, or a basic name (`black white red green blue
 yellow grey`). `border` (default `true`) draws the frame.
 
+## Window chrome & padding (optional)
+
+Dress a recording as a window and give the cells breathing room. Add a
+`[chrome]` table to either an `encode` or a `record` config:
+
+```toml
+[chrome]
+style   = "macos"     # "macos" | "linux" | "none"   (default: none)
+title   = "hello.sh"  # shown in the title bar
+padding = 14          # px of terminal-bg inset around the cells
+# bar   = "#2b2b2b"   # optional title-bar color
+# text  = "#d0d0d0"   # optional title-text color
+```
+
+- **macos** — three traffic-light dots top-left, title centered, rounded
+  corners (transparent outside).
+- **linux** — a single close button top-right, title left-aligned, rounded
+  top corners.
+- **none** — no bar; `padding` only.
+
+All chrome sizes scale from `font_px`. Padding works with `style = "none"` too.
+
 ## Install
 
 **Prebuilt binaries** (Linux static-musl x86_64/aarch64, macOS x86_64/aarch64) —
