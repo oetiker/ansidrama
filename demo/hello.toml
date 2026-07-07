@@ -9,6 +9,12 @@ env     = { PS1 = "$ ", COLORTERM = "truecolor" }
 settle_ms = 15 # keep real (wall-clock) generation time short
 quit_keys = ["C-d"]
 
+# Dress the recording as a macOS terminal window with a little breathing room.
+[chrome]
+style   = "macos"
+title   = "AnsiDrama"
+padding = 12
+
 [[scene]]
 card    = { text = "hello, world", fg = "#fef9c3" }
 hold_cs = 150

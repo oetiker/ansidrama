@@ -15,6 +15,12 @@ env     = { PS1 = "$ ", COLORTERM = "truecolor" }
 settle_ms = 3500
 quit_keys = ["C-d"]
 
+# Frame the whole trailer as a macOS terminal window, with padding.
+[chrome]
+style   = "macos"
+title   = "AnsiDrama"
+padding = 12
+
 [[scene]]
 card    = { lines = ["AnsiDrama", "no browser · no ffmpeg · no tmux"], fg = "#fef9c3" }
 hold_cs = 300
