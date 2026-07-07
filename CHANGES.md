@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+### Fixed
+
+## 0.1.0 - 2026-07-07
+
+### New
+
 - **`encode`**: assemble an animated WebP from captured ANSI snapshots and synthetic silent-movie title cards, each held for a configurable duration.
 - **`record`**: drive a command inside an embedded terminal (a PTY plus a VT parser — no tmux) and capture one frame per key, per typed character, and per mouse cell-step; friendly `click`/`drag`/`scroll` actions expand to SGR mouse reports.
 - Title cards, native truecolor, and deterministic frame output (same script → same bytes).
