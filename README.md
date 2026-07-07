@@ -2,7 +2,12 @@
 
 [![CI](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml/badge.svg)](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml)
 
-![ansidrama records itself](docs/demo/ansidrama.webp)
+![AnsiDrama records itself](docs/demo/ansidrama.webp)
+
+That trailer is itself an AnsiDrama recording — in it you can watch `ansidrama
+record hello.toml` run for real. Here is the little WebP that command produces:
+
+![the WebP the trailer just recorded](docs/demo/hello.webp)
 
 Turn a terminal session into a crisp, tiny, **animated WebP** — scripted scenes,
 silent-movie title cards, deterministic frames. No browser, no ffmpeg, no
