@@ -115,7 +115,15 @@ impl Chrome {
                     let (tw, asc, lh) = r.text_extents(&self.title, self.title_px);
                     let x = (out_w as f32 - tw) / 2.0;
                     let baseline = (self.bar_h as f32 - lh) / 2.0 + asc;
-                    r.draw_text(img, x, baseline, &self.title, self.title_px, self.text, false);
+                    r.draw_text(
+                        img,
+                        x,
+                        baseline,
+                        &self.title,
+                        self.title_px,
+                        self.text,
+                        false,
+                    );
                 }
             }
             ChromeStyle::Linux => {
@@ -179,7 +187,11 @@ fn overlay(dst: &mut RgbaImage, src: &RgbaImage, ox: u32, oy: u32) {
 /// the existing alpha.
 fn blend_over(img: &mut RgbaImage, x: u32, y: u32, c: Rgb, cov: f32) {
     let cur = img.get_pixel(x, y);
-    let mix = |f: u8, b: u8| (f as f32 * cov + b as f32 * (1.0 - cov)).round().clamp(0.0, 255.0) as u8;
+    let mix = |f: u8, b: u8| {
+        (f as f32 * cov + b as f32 * (1.0 - cov))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     img.put_pixel(
         x,
         y,

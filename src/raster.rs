@@ -91,7 +91,9 @@ impl Renderer {
         bold: bool,
     ) {
         let font = if bold { &self.bold } else { &self.regular };
-        let adv = font.as_scaled(PxScale::from(px)).h_advance(font.glyph_id('M'));
+        let adv = font
+            .as_scaled(PxScale::from(px))
+            .h_advance(font.glyph_id('M'));
         let mut cx = x;
         for ch in text.chars() {
             self.blit_glyph(img, font, ch, cx, baseline, PxScale::from(px), color);
