@@ -63,15 +63,16 @@ jobs:
         run: |
           DATE=$(date +%Y-%m-%d)
           VERSION="${{ steps.version.outputs.version }}"
+          # Move the `## Unreleased` block (everything up to the next `## <version>`
+          # heading, or EOF) into a new `## <version> - <date>` section and reset
+          # Unreleased to empty subsections. Block-boundary match (not per-subsection)
+          # so blank lines before ### Changed/### Fixed and a missing trailing version
+          # section (the first release) are handled correctly.
           perl -i -0777 -pe '
-            s/## Unreleased\n+(### New\n(.*?))?(\n### Changed\n(.*?))?(\n### Fixed\n(.*?))?\n+(?=##|\z)/
+            s{^\#\# Unreleased\n(.*?)(?=\n\#\# |\z)}{
               "## Unreleased\n\n### New\n\n### Changed\n\n### Fixed\n\n" .
-              "## '"$VERSION"' - '"$DATE"'\n" .
-              ($2 ? "\n### New\n$2" : "") .
-              ($4 ? "\n### Changed\n$4" : "") .
-              ($6 ? "\n### Fixed\n$6" : "") .
-              "\n"
-            /se' CHANGES.md
+              "## '"$VERSION"' - '"$DATE"'\n$1"
+            }gmse' CHANGES.md
 
       - name: Commit and tag
         run: |
