@@ -114,7 +114,10 @@ jobs:
 
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        # Pin to the released version the static-musl build was verified with,
+        # so the (locally-untestable) first release run doesn't depend on cross's
+        # moving `main`.
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Build binary
         run: |
