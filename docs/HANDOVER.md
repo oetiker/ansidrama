@@ -24,11 +24,44 @@ making ansidrama a **zero-runtime-dependency** static binary. New modules:
 guard. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-06-embedded-terminal-*`.
 Merged to `main` (merge commit on `main`), all tests green.
 
-## Sub-project 2 — release trimmings: 🚧 IN PROGRESS
+## Sub-project 2 — release trimmings: ✅ DONE, merged to `main`, pushed public
 
-**Branch:** `feat/release-trimmings` (currently checked out).
+All 9 plan tasks implemented via subagent-driven-development, whole-branch
+review clean (opus, "Ready to merge: Yes"). Merged to `main` (`--no-ff`, merge
+commit `51b3240`) and **pushed to the newly created public repo
+github.com/oetiker/ansidrama** (`origin`, SSH). The `feat/release-trimmings`
+branch was deleted after merge. First CI run triggered by the push.
+
+Delivered: `.github/workflows/{ci,release}.yml`, `Cross.toml` (static-musl build
+verified locally with cross 0.2.5), `[package.metadata.deb]`/`[…generate-rpm]`
+in `Cargo.toml` (+`strip = true`, repo/homepage URLs), `man/ansidrama.1`,
+`CHANGES.md`, `Makefile`, the self-recording demo (`demo/{hello,readme}.toml` +
+committed `docs/demo/{ansidrama,hello}.webp`), and README (hero + result webp,
+CI badge, install docs). **Product branded `AnsiDrama`** in prose/titles;
+command/crate/`.deb`/`.rpm`/URLs stay lowercase `ansidrama`.
+
+Two release-workflow bugs inherited from byonk were found in review and fixed:
+the CHANGES.md rewrite perl and the release-notes `sed` both dropped `### Fixed`
+on the first-release shape — replaced with a block-boundary perl and a
+heading-guarded `sed` (both verified end-to-end for v0.1.0 and a future v0.2.0).
+`cross` pinned to 0.2.5 (was unpinned `main`).
+
+### THE ONE REMAINING STEP (only the user can do it)
+Run the **Release** workflow on GitHub: Actions → Release → Run workflow →
+`release_type = feature`. From the `v0.0.0` baseline that yields **v0.1.0** —
+it bumps `Cargo.toml`, rolls `CHANGES.md`, tags `v0.1.0`, builds the 4-target
+matrix, and publishes the GitHub Release with tarballs + `.deb` + `.rpm`. This
+is the only part never exercised locally. (`gh workflow run release.yml -f
+release_type=feature` also works.)
+
+Possible future sub-projects (noted, not started): apt/dnf repo hosted on
+GitHub Pages (needs a Pages job + GPG signing); pure-Rust animated-WebP muxer to
+drop the libwebp `cc` dependency.
+
+### Original spec / decisions (for reference)
 **Spec:** `docs/superpowers/specs/2026-07-07-release-trimmings-design.md`
-(committed, commit `ed0ba02`). Nothing implemented yet.
+(`ed0ba02`). **Plan:** `docs/superpowers/plans/2026-07-07-release-trimmings.md`
+(`3e2ddb5`).
 
 ### Decisions locked (with the user)
 - **Targets:** Linux `x86_64`+`aarch64` (static **musl**, via `cross`), macOS
