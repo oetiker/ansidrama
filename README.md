@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml/badge.svg)](https://github.com/oetiker/ansidrama/actions/workflows/ci.yml)
 
+**Script a terminal session into a crisp, tiny, looping WebP — perfect for a
+README.** One static binary renders every frame itself: no browser, no ffmpeg,
+no asciinema, no runtime dependencies.
+
 ![AnsiDrama records itself](docs/demo/ansidrama.webp)
 
 That trailer is itself an AnsiDrama recording — in it you can watch `ansidrama
@@ -9,9 +13,8 @@ record hello.toml` run for real. Here is the little WebP that command produces:
 
 ![the WebP the trailer just recorded](docs/demo/hello.webp)
 
-Turn a terminal session into a crisp, tiny, **animated WebP** — scripted scenes,
-silent-movie title cards, deterministic frames. No browser, no ffmpeg, no
-asciinema, no runtime dependencies — a single static binary.
+You script the scenes in TOML — typed commands, keypresses, friendly mouse
+moves, silent-movie title cards — and every frame is rendered deterministically.
 
 AnsiDrama renders each frame itself: it parses the terminal's ANSI cell grid
 and rasterizes it with a bundled monospace font, hand-painting box-drawing and
