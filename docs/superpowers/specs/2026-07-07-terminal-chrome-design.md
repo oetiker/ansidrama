@@ -85,11 +85,15 @@ With `style = "none"`:
 
 All chrome metrics — `titlebar_h`, dot radius, close-glyph size, corner radius,
 title font size — scale from the renderer's `cell_h`, so they track `font_px`.
-Proposed relations (tunable during implementation):
+Relations (tuned against a visual mockup on real reference proportions —
+macOS traffic-light spacing, a GNOME header bar — still fine-tunable against
+`--dump-png` output during implementation):
 
-- `titlebar_h ≈ 1.6 · cell_h`
-- `corner_radius ≈ 0.3 · titlebar_h`
-- traffic-light dot radius ≈ `0.22 · titlebar_h`, dots spaced ≈ `0.9 · titlebar_h`
+- `titlebar_h ≈ 1.55 · cell_h`
+- `corner_radius ≈ 0.30 · titlebar_h`
+- traffic-light dot **diameter** ≈ `0.42 · titlebar_h`, edge gap between dots ≈ `0.20 · titlebar_h`
+- title text / close-glyph size ≈ `0.52 · titlebar_h` (close glyph a touch larger, ≈ `0.62 · titlebar_h`)
+- horizontal bar inset (controls/title from the edge) ≈ `0.55 · titlebar_h`
 
 ## The three styles
 
