@@ -81,8 +81,18 @@ impl<'a> Recorder<'a> {
     }
 
     /// Wait for the first paint to settle, then seed the current grid.
+    ///
+    /// `startup_ms` is a floor, not just a cap: we wait it out so a slow first
+    /// paint — e.g. an interactive shell's initial prompt — is fully drawn before
+    /// we capture. A short `settle_ms` must NOT cut this short: `settle` returns
+    /// the moment the PTY is quiet for `settle_ms`, which for a small `settle_ms`
+    /// happens during the brief quiet *before* the prompt is printed. That would
+    /// seed a blank screen, and the first keystrokes would land ahead of the
+    /// prompt (`pri` then `bash-5.2$` → `pribash-5.2$`). After the floor, let any
+    /// remaining output settle normally.
     fn seed(&mut self) {
-        self.term.settle(self.idle, self.startup.max(self.idle));
+        self.term.settle(self.startup, self.startup);
+        self.term.settle(self.idle, self.cap);
         self.last_grid = self.term.grid();
         self.caret = self.term.caret();
     }

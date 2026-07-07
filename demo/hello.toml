@@ -6,7 +6,8 @@ rows    = 10
 font_px = 18
 out     = "hello.webp"
 env     = { PS1 = "$ ", COLORTERM = "truecolor" }
-settle_ms = 15 # keep real (wall-clock) generation time short
+settle_ms = 40    # let each keystroke settle before capture (kept < readme.toml's settle_ms)
+startup_ms = 1500 # floor: wait for bash's first prompt before typing (avoids a prompt race)
 quit_keys = ["C-d"]
 
 # Dress the recording as a macOS terminal window with a little breathing room.
