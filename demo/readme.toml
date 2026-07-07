@@ -1,12 +1,14 @@
 # Outer trailer: drive bash through the self-referential demo.
 # `out` is relative to this file's dir (demo/): ../docs/demo → docs/demo/.
-launch  = "bash --norc --noprofile -i"
+# PS1 as a prefix on the inner shell so it beats /etc/profile (an env-table PS1
+# is overridden by the outer login shell before this interactive bash starts).
+launch  = "PS1='$ ' bash --norc --noprofile -i"
 cols    = 84
 rows    = 22
 font_px = 18
 card_font_px = 40
 out     = "../docs/demo/ansidrama.webp"
-env     = { PS1 = "$ ", COLORTERM = "truecolor" }
+env     = { COLORTERM = "truecolor" }
 # The middle beat runs a REAL `ansidrama record hello.toml` as a child process.
 # `capture()` gives up once the PTY has been quiet for settle_ms — so settle_ms
 # must comfortably exceed the LONGEST silent gap in that child's own output
