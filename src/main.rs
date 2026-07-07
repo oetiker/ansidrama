@@ -1,4 +1,4 @@
-//! ansidrama CLI: `encode` (frames → WebP) and `record` (drive tmux → WebP).
+//! ansidrama CLI: `encode` (frames → WebP) and `record` (drive an embedded terminal → WebP).
 
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ fn usage() -> ! {
          \x20 ansidrama record <config.toml> [-o out.webp] [--dump-png <dir>]\n\
          \n\
          encode  assemble a WebP from a list of ANSI snapshots and/or title cards.\n\
-         record  drive a command in tmux per a scene script, capturing each frame.\n\
+         record  drive a command in an embedded terminal per a scene script, capturing each frame.\n\
          \n\
          -o           output path (overrides `out` in the config)\n\
          --dump-png   also write each rendered frame as a PNG into <dir> (debug)\n"
@@ -69,7 +69,10 @@ fn main() -> Result<()> {
     let dump = a.dump_png.as_deref();
     match cmd.as_str() {
         "encode" => ansidrama::encode(&a.config, out, dump),
+        #[cfg(unix)]
         "record" => ansidrama::record(&a.config, out, dump),
+        #[cfg(not(unix))]
+        "record" => anyhow::bail!("record is only supported on unix platforms"),
         _ => unreachable!(),
     }
 }

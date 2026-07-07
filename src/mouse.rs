@@ -1,9 +1,9 @@
 //! Friendly mouse primitives → SGR (1006) mouse-report byte sequences.
 //!
 //! A TUI with mouse tracking on reads `ESC [ < b ; col ; row M` (press/motion)
-//! and `… m` (release) from its input; those bytes are what we feed the app via
-//! tmux `send-keys -l`. The config never spells them out — it says `click`,
-//! `drag`, `scroll`, and this module emits the wire form. Coordinates are
+//! and `… m` (release) from its input; those bytes are what we write to the app
+//! via the embedded terminal (PTY). The config never spells them out — it says
+//! `click`, `drag`, `scroll`, and this module emits the wire form. Coordinates are
 //! 1-based, matching the terminal.
 
 use serde::Deserialize;

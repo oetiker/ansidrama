@@ -1,13 +1,14 @@
 //! ansidrama — assemble or record a terminal session into a crisp animated WebP.
 //!
 //! A *drama* is a sequence of frames, each held for a duration. A frame is either
-//! a captured terminal snapshot (ANSI from `tmux capture-pane -e -p -N`) or a
-//! synthetic silent-movie **title card**. Two entry points:
+//! a captured terminal snapshot (ANSI text, e.g. from `tmux capture-pane -e -p
+//! -N`) or a synthetic silent-movie **title card**. Two entry points:
 //!
 //! - [`encode`] — the primitive: a list of ANSI snapshots + cards + holds → WebP.
 //!   No terminal driving; bring your own frames.
-//! - [`record`] — drive a command in tmux per a scene script, capture each frame,
-//!   then hand off to the same encode path.
+//! - [`record`] — drive a command in an embedded terminal (its own PTY + VT
+//!   parser, no tmux) per a scene script, capture each frame, then hand off to
+//!   the same encode path.
 
 use std::path::Path;
 
@@ -19,9 +20,14 @@ pub mod cursor;
 pub mod encode;
 pub mod frame;
 pub mod grid;
+#[cfg(unix)]
+pub mod keys;
 pub mod mouse;
 pub mod raster;
+#[cfg(unix)]
 pub mod record;
+#[cfg(unix)]
+pub mod term;
 
 use crate::config::{EncodeConfig, FrameSource};
 use crate::encode::{encode_webp, total_ms, Frame};
@@ -96,6 +102,7 @@ pub fn encode(
 }
 
 /// Run the `record` command (see [`record::run`]).
+#[cfg(unix)]
 pub fn record(
     config_path: &Path,
     out_override: Option<&Path>,

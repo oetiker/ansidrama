@@ -1,12 +1,11 @@
-//! The `record` command: drive a command in a detached tmux session and turn a
-//! scene script into an animation. Each scene expands into many frames — one per
-//! key, one per typed character, one per mouse-cursor cell-step — so keyboard and
-//! mouse actions play out step by step. Cursor-only moves reuse the last capture;
-//! drags re-capture each step so live UI (e.g. a resize preview) is shown.
+//! The `record` command: drive a command in an embedded terminal (its own PTY
+//! plus a `vt100` parser — no tmux) and turn a scene script into an animation.
+//! Each scene expands into many frames — one per key, one per typed character,
+//! one per mouse-cursor cell-step — so keyboard and mouse actions play out step
+//! by step. Cursor-only moves reuse the last capture; drags re-capture each step
+//! so live UI (e.g. a resize preview) is shown.
 
 use std::path::Path;
-use std::process::Command;
-use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -16,35 +15,10 @@ use crate::config::{min_hold_cs, Action, Card, RecordConfig, Scene};
 use crate::cursor;
 use crate::encode::{encode_webp, total_ms, Frame};
 use crate::frame;
-use crate::grid::{parse_grid, Cell};
+use crate::grid::Cell;
 use crate::mouse::{Button, Scroll};
 use crate::raster::Renderer;
-
-const SESSION: &str = "ansidrama_rec";
-
-fn tmux(args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("tmux")
-        .args(args)
-        .output()
-        .context("spawn tmux (is it installed?)")?;
-    anyhow::ensure!(out.status.success(), "tmux {:?} failed", args);
-    Ok(out.stdout)
-}
-
-/// Send one key/mouse token. ESC-prefixed tokens are raw byte sequences (mouse
-/// reports / literal escapes) sent with `-l`; everything else is a named tmux key.
-fn send(token: &str) -> Result<()> {
-    if token.starts_with('\x1b') {
-        send_literal(token)
-    } else {
-        tmux(&["send-keys", "-t", SESSION, token]).map(|_| ())
-    }
-}
-
-/// Send raw bytes to the pane (`send-keys -l`) — for mouse reports and typed text.
-fn send_literal(token: &str) -> Result<()> {
-    tmux(&["send-keys", "-t", SESSION, "-l", token]).map(|_| ())
-}
+use crate::term::Term;
 
 /// Cells along the straight line from `a` to `b`, one per step, excluding `a` and
 /// including `b` (empty if `a == b`).
@@ -61,60 +35,54 @@ fn line_cells(a: (u32, u32), b: (u32, u32)) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Ask tmux where the (visible) hardware cursor is — the app's text caret. `None`
-/// when the cursor is hidden. Coordinates are 0-based within the pane.
-fn query_caret() -> Option<(u32, u32)> {
-    let out = tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        SESSION,
-        "#{cursor_flag} #{cursor_x} #{cursor_y}",
-    ])
-    .ok()?;
-    let s = String::from_utf8_lossy(&out);
-    let mut it = s.split_whitespace();
-    if it.next()? != "1" {
-        return None; // cursor hidden
-    }
-    let x: u32 = it.next()?.parse().ok()?;
-    let y: u32 = it.next()?.parse().ok()?;
-    Some((x, y))
-}
-
-/// Drives the session and accumulates frames.
+/// Drives the embedded terminal and accumulates frames.
 struct Recorder<'a> {
     cfg: &'a RecordConfig,
     renderer: Renderer,
-    settle: Duration,
+    idle: Duration,
+    cap: Duration,
+    startup: Duration,
     min_cs: u16,
     last_grid: Vec<Vec<Cell>>,
     last_mouse: Option<(u32, u32)>,
     caret: Option<(u32, u32)>,
     frames: Vec<Frame>,
+    term: Term,
 }
 
 impl<'a> Recorder<'a> {
-    fn new(cfg: &'a RecordConfig) -> Self {
-        Recorder {
+    fn spawn(cfg: &'a RecordConfig) -> Result<Recorder<'a>> {
+        let term = Term::spawn(cfg.cols as u16, cfg.rows as u16, &cfg.launch, &cfg.env)
+            .context("start embedded terminal")?;
+        let idle = Duration::from_millis(cfg.settle_ms);
+        let cap = idle.saturating_mul(8).max(Duration::from_millis(1500));
+        Ok(Recorder {
             renderer: Renderer::new(cfg.font_px),
-            settle: Duration::from_millis(cfg.settle_ms),
+            idle,
+            cap,
+            startup: Duration::from_millis(cfg.startup_ms),
             min_cs: min_hold_cs(cfg.max_fps),
             last_grid: vec![Vec::new()],
             last_mouse: None,
             caret: None,
-            cfg,
             frames: Vec::new(),
-        }
+            cfg,
+            term,
+        })
     }
 
-    /// Capture the pane, keeping the coloured cell grid and the caret position.
-    fn capture(&mut self) -> Result<()> {
-        sleep(self.settle);
-        let bytes = tmux(&["capture-pane", "-t", SESSION, "-e", "-p", "-N"])?;
-        self.last_grid = parse_grid(&String::from_utf8_lossy(&bytes));
-        self.caret = query_caret();
-        Ok(())
+    /// Wait for the first paint to settle, then seed the current grid.
+    fn seed(&mut self) {
+        self.term.settle(self.idle, self.startup.max(self.idle));
+        self.last_grid = self.term.grid();
+        self.caret = self.term.caret();
+    }
+
+    /// Let the screen settle after an input, then re-read the grid and caret.
+    fn capture(&mut self) {
+        self.term.settle(self.idle, self.cap);
+        self.last_grid = self.term.grid();
+        self.caret = self.term.caret();
     }
 
     /// Render the current grid and push a frame. A frame with a mouse position
@@ -129,7 +97,6 @@ impl<'a> Recorder<'a> {
                 let (px, py) = self.renderer.cell_origin(x, y);
                 cursor::stamp(&mut img, px, py);
             } else if let Some((cx, cy)) = self.caret {
-                // The app's text caret → a block cursor (inverse video) on that cell.
                 let cell = self
                     .last_grid
                     .get(cy as usize)
@@ -189,13 +156,13 @@ impl<'a> Recorder<'a> {
             Action::Keys(keys) => {
                 if keys.is_empty() {
                     // "Hold the current screen" — capture once.
-                    self.capture()?;
+                    self.capture();
                     self.push(None, hold_cs);
                 } else {
                     let last = keys.len() - 1;
                     for (i, k) in keys.iter().enumerate() {
-                        send(k)?;
-                        self.capture()?;
+                        self.term.send_key(k)?;
+                        self.capture();
                         self.push(None, if i == last { hold_cs } else { type_cs });
                     }
                 }
@@ -205,8 +172,8 @@ impl<'a> Recorder<'a> {
                 let chars: Vec<char> = s.chars().collect();
                 let last = chars.len().saturating_sub(1);
                 for (i, c) in chars.iter().enumerate() {
-                    send_literal(&c.to_string())?;
-                    self.capture()?;
+                    self.term.send_bytes(c.to_string().as_bytes())?;
+                    self.capture();
                     self.push(None, if i == last { hold_cs } else { type_cs });
                 }
             }
@@ -215,11 +182,11 @@ impl<'a> Recorder<'a> {
                 let at = (c.x, c.y);
                 let b = c.button;
                 self.move_to(at, move_cs);
-                send(&sgr(b, at, true))?; // press
-                self.capture()?;
+                self.term.send_bytes(sgr(b, at, true).as_bytes())?; // press
+                self.capture();
                 self.push(Some(at), move_cs);
-                send(&sgr(b, at, false))?; // release
-                self.capture()?;
+                self.term.send_bytes(sgr(b, at, false).as_bytes())?; // release
+                self.capture();
                 self.push(Some(at), hold_cs);
             }
 
@@ -228,16 +195,16 @@ impl<'a> Recorder<'a> {
                 let to = (d.to[0], d.to[1]);
                 let b = d.button;
                 self.move_to(from, move_cs);
-                send(&sgr(b, from, true))?; // press
-                self.capture()?;
+                self.term.send_bytes(sgr(b, from, true).as_bytes())?; // press
+                self.capture();
                 self.push(Some(from), move_cs);
                 for cell in line_cells(from, to) {
-                    send(&sgr_motion(b, cell))?; // drag with button held
-                    self.capture()?;
+                    self.term.send_bytes(sgr_motion(b, cell).as_bytes())?; // drag
+                    self.capture();
                     self.push(Some(cell), move_cs);
                 }
-                send(&sgr(b, to, false))?; // release
-                self.capture()?;
+                self.term.send_bytes(sgr(b, to, false).as_bytes())?; // release
+                self.capture();
                 self.push(Some(to), hold_cs);
                 self.last_mouse = Some(to);
             }
@@ -248,8 +215,8 @@ impl<'a> Recorder<'a> {
                 let seqs = scroll_sequences(s);
                 let last = seqs.len().saturating_sub(1);
                 for (i, seq) in seqs.iter().enumerate() {
-                    send(seq)?;
-                    self.capture()?;
+                    self.term.send_bytes(seq.as_bytes())?;
+                    self.capture();
                     self.push(Some(at), if i == last { hold_cs } else { move_cs });
                 }
             }
@@ -291,35 +258,8 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let base = config_path.parent().unwrap_or(Path::new("."));
     let out_path = resolve_out(out_override, cfg.out.as_deref(), base, config_path)?;
 
-    // Launch the app in a detached, fixed-size tmux session.
-    let _ = tmux(&["kill-session", "-t", SESSION]);
-    let launch = format!("{}; tmux wait-for -S ansidrama_done", cfg.launch);
-    let (cols, rows) = (cfg.cols.to_string(), cfg.rows.to_string());
-    let mut new_args: Vec<&str> =
-        vec!["new-session", "-d", "-s", SESSION, "-x", &cols, "-y", &rows];
-    // Pass env via `-e KEY=VAL` (tmux ≥ 3.2). Default COLORTERM=truecolor so the
-    // app emits 24-bit colour. Keep the strings alive for the call.
-    let mut env = cfg.env.clone();
-    env.entry("COLORTERM".to_string())
-        .or_insert_with(|| "truecolor".to_string());
-    let env_args: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    for e in &env_args {
-        new_args.push("-e");
-        new_args.push(e);
-    }
-    new_args.push("bash");
-    new_args.push("-lc");
-    new_args.push(&launch);
-    tmux(&new_args).context("tmux new-session")?;
-    // Tell tmux the virtual terminal is 24-bit-colour capable, so truecolor SGR
-    // survives into `capture-pane -e` (else it quantises to 256). Appended, so it
-    // does not clobber an existing terminal-overrides on a shared server.
-    let _ = tmux(&["set-option", "-ga", "terminal-overrides", ",*:RGB"]);
-
-    sleep(Duration::from_millis(cfg.startup_ms)); // settle the first paint
-
-    let mut rec = Recorder::new(&cfg);
-    let _ = rec.capture(); // seed the current grid
+    let mut rec = Recorder::spawn(&cfg)?;
+    rec.seed(); // settle the first paint, seed the grid
     for (i, scene) in cfg.scenes.iter().enumerate() {
         rec.process(scene)?;
         eprintln!("  scene {i:02} → {} frames total", rec.frames.len());
@@ -333,23 +273,27 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
         }
     }
 
-    // Quit the app and tear down the session.
+    // Quit the app, take the frames, then drop the terminal (reaps the child).
     for k in &cfg.quit_keys {
-        let _ = send(k);
+        let _ = rec.term.send_key(k);
     }
-    let _ = tmux(&["kill-session", "-t", SESSION]);
+    let frames = std::mem::take(&mut rec.frames);
+    drop(rec);
 
-    let webp = encode_webp(&rec.frames)?;
+    if frames.is_empty() {
+        bail!("no frames captured");
+    }
+    let webp = encode_webp(&frames)?;
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(&out_path, &webp).with_context(|| format!("write {}", out_path.display()))?;
-    let (w, h) = rec.frames[0].image.dimensions();
+    let (w, h) = frames[0].image.dimensions();
     eprintln!(
         "OK: wrote {} ({} frames, {w}x{h}px, {:.1}s loop)",
         out_path.display(),
-        rec.frames.len(),
-        total_ms(&rec.frames) as f32 / 1000.0
+        frames.len(),
+        total_ms(&frames) as f32 / 1000.0
     );
     Ok(())
 }

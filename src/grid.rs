@@ -19,28 +19,6 @@ pub struct Cell {
 
 // --- ANSI capture → grid ----------------------------------------------------
 
-/// Classic VGA/xterm 16-colour palette, used to resolve SGR 30–37/40–47 and the
-/// low 16 of the 256-colour cube. Truecolour apps emit `38;2;r;g;b` directly and
-/// never touch this; it only backs the rare 16/256-indexed cell.
-const PALETTE16: [Rgb; 16] = [
-    (0, 0, 0),
-    (170, 0, 0),
-    (0, 170, 0),
-    (170, 85, 0),
-    (0, 0, 170),
-    (170, 0, 170),
-    (0, 170, 170),
-    (170, 170, 170),
-    (85, 85, 85),
-    (255, 85, 85),
-    (85, 255, 85),
-    (255, 255, 85),
-    (85, 85, 255),
-    (255, 85, 255),
-    (85, 255, 255),
-    (255, 255, 255),
-];
-
 #[derive(Clone, Copy, PartialEq)]
 enum Col {
     Default,
@@ -48,28 +26,14 @@ enum Col {
 }
 
 fn palette16(i: u8) -> Col {
-    let (r, g, b) = PALETTE16[(i & 0x0f) as usize];
+    let (r, g, b) = crate::color::index_to_rgb(i & 0x0f);
     Col::Rgb(r, g, b)
 }
 
 /// xterm 256-colour index → RGB.
 fn xterm256(i: u8) -> Col {
-    match i {
-        0..=15 => palette16(i),
-        16..=231 => {
-            let i = i - 16;
-            let steps = [0u8, 95, 135, 175, 215, 255];
-            Col::Rgb(
-                steps[(i / 36) as usize],
-                steps[((i / 6) % 6) as usize],
-                steps[(i % 6) as usize],
-            )
-        }
-        232..=255 => {
-            let v = 8 + 10 * (i - 232);
-            Col::Rgb(v, v, v)
-        }
-    }
+    let (r, g, b) = crate::color::index_to_rgb(i);
+    Col::Rgb(r, g, b)
 }
 
 #[derive(Clone, Copy, PartialEq)]
