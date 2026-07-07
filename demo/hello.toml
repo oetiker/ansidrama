@@ -1,0 +1,21 @@
+# Inner demo: a tiny, real `record` run driven by printf (no recursion).
+# `out` is relative to this file's dir (demo/), so hello.webp lands in demo/.
+launch  = "bash --norc --noprofile -i"
+cols    = 64
+rows    = 10
+font_px = 18
+out     = "hello.webp"
+env     = { PS1 = "$ ", COLORTERM = "truecolor" }
+settle_ms = 15 # keep real (wall-clock) generation time short
+quit_keys = ["C-d"]
+
+[[scene]]
+card    = { text = "hello, world", fg = "#fef9c3" }
+hold_cs = 150
+
+[[scene]]
+text    = "printf '\\033[38;2;120;220;255mhi from ansidrama\\033[0m\\n'"
+hold_cs = 40
+[[scene]]
+keys    = ["Enter"]
+hold_cs = 220

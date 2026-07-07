@@ -1,0 +1,48 @@
+# Outer trailer: drive bash through the self-referential demo.
+# `out` is relative to this file's dir (demo/): ../docs/demo → docs/demo/.
+launch  = "bash --norc --noprofile -i"
+cols    = 84
+rows    = 22
+font_px = 18
+card_font_px = 40
+out     = "../docs/demo/ansidrama.webp"
+env     = { PS1 = "$ ", COLORTERM = "truecolor" }
+# The middle beat runs a REAL `ansidrama record hello.toml` as a child process.
+# `capture()` gives up once the PTY has been quiet for settle_ms — so settle_ms
+# must comfortably exceed the LONGEST silent gap in that child's own output
+# (mostly its own typing scene: chars * hello.toml's settle_ms), not just its
+# total run time, or the "OK:" line gets captured before it's actually printed.
+settle_ms = 3500
+quit_keys = ["C-d"]
+
+[[scene]]
+card    = { lines = ["ansidrama", "no browser · no ffmpeg · no tmux"], fg = "#fef9c3" }
+hold_cs = 300
+
+# Reveal the (real, colourised) inner script.
+[[scene]]
+text    = "cat hello.toml"
+hold_cs = 40
+[[scene]]
+keys    = ["Enter"]
+hold_cs = 250
+
+# Run it for real — the OK: line is genuine output.
+[[scene]]
+text    = "ansidrama record hello.toml"
+hold_cs = 40
+[[scene]]
+keys    = ["Enter"]
+hold_cs = 450
+
+# Show the file it made.
+[[scene]]
+text    = "ls -l hello.webp"
+hold_cs = 40
+[[scene]]
+keys    = ["Enter"]
+hold_cs = 250
+
+[[scene]]
+card    = { text = "a star is born", fg = "#fef9c3" }
+hold_cs = 350
