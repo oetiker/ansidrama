@@ -8,6 +8,10 @@ the active branch, the next concrete step, and any pending decisions), then
 stop so a fresh session can resume from that file. Read `docs/HANDOVER.md`
 first at the start of a session if it exists.
 
+## Before starting work
+
+- Always `git pull` before starting work so you're on the latest `main`.
+
 ## Build/test notes
 
 - Cargo target dir is redirected to `/home/oetiker/scratch/cargo-target` — the
