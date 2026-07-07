@@ -30,6 +30,7 @@ pub mod record;
 #[cfg(unix)]
 pub mod term;
 
+use crate::chrome::Chrome;
 use crate::config::{EncodeConfig, FrameSource};
 use crate::encode::{encode_webp, total_ms, Frame};
 use crate::raster::Renderer;
@@ -59,6 +60,11 @@ pub fn encode(
         std::fs::create_dir_all(d).ok();
     }
     let renderer = Renderer::new(cfg.font_px);
+    let cell_h = renderer.cell_size().1;
+    let chrome = match &cfg.chrome {
+        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+        None => Chrome::disabled(),
+    };
     let min_cs = crate::config::min_hold_cs(cfg.max_fps);
     let mut frames: Vec<Frame> = Vec::with_capacity(cfg.frames.len());
     for (i, spec) in cfg.frames.iter().enumerate() {
@@ -77,6 +83,11 @@ pub fn encode(
                 cfg.card_font_px,
                 cfg.card_subtitle_px,
             )?,
+        };
+        let image = if chrome.is_active() {
+            chrome.matte(&renderer, &image)
+        } else {
+            image
         };
         if let Some(d) = dump_png {
             let _ = image.save(d.join(format!("frame{i:02}.png")));

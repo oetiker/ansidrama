@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use image::RgbaImage;
 
+use crate::chrome::Chrome;
 use crate::config::{min_hold_cs, Action, Card, RecordConfig, Scene};
 use crate::cursor;
 use crate::encode::{encode_webp, total_ms, Frame};
@@ -39,6 +40,7 @@ fn line_cells(a: (u32, u32), b: (u32, u32)) -> Vec<(u32, u32)> {
 struct Recorder<'a> {
     cfg: &'a RecordConfig,
     renderer: Renderer,
+    chrome: Chrome,
     idle: Duration,
     cap: Duration,
     startup: Duration,
@@ -56,8 +58,15 @@ impl<'a> Recorder<'a> {
             .context("start embedded terminal")?;
         let idle = Duration::from_millis(cfg.settle_ms);
         let cap = idle.saturating_mul(8).max(Duration::from_millis(1500));
+        let renderer = Renderer::new(cfg.font_px);
+        let cell_h = renderer.cell_size().1;
+        let chrome = match &cfg.chrome {
+            Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+            None => Chrome::disabled(),
+        };
         Ok(Recorder {
-            renderer: Renderer::new(cfg.font_px),
+            renderer,
+            chrome,
             idle,
             cap,
             startup: Duration::from_millis(cfg.startup_ms),
@@ -112,8 +121,13 @@ impl<'a> Recorder<'a> {
                     .draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
             }
         }
+        let image = if self.chrome.is_active() {
+            self.chrome.matte(&self.renderer, &img)
+        } else {
+            img
+        };
         self.frames.push(Frame {
-            image: img,
+            image,
             hold_cs: hold_cs.max(self.min_cs),
         });
     }
@@ -128,8 +142,13 @@ impl<'a> Recorder<'a> {
             self.cfg.card_font_px,
             self.cfg.card_subtitle_px,
         )?;
+        let image = if self.chrome.is_active() {
+            self.chrome.matte(&self.renderer, &img)
+        } else {
+            img
+        };
         self.frames.push(Frame {
-            image: img,
+            image,
             hold_cs: hold_cs.max(self.min_cs),
         });
         Ok(())

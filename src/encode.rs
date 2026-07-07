@@ -48,3 +48,29 @@ pub fn encode_webp(frames: &[Frame]) -> Result<Vec<u8>> {
 pub fn total_ms(frames: &[Frame]) -> i32 {
     frames.iter().map(|f| f.hold_cs as i32 * 10).sum()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn preserves_alpha_through_lossless() {
+        let mut img = RgbaImage::from_pixel(8, 8, Rgba([10, 20, 30, 255]));
+        img.put_pixel(0, 0, Rgba([0, 0, 0, 0])); // transparent corner
+        let frames = vec![
+            Frame { image: img.clone(), hold_cs: 10 },
+            Frame { image: img, hold_cs: 10 },
+        ];
+        let bytes = encode_webp(&frames).unwrap();
+
+        let decoded = webp::AnimDecoder::new(&bytes)
+            .decode()
+            .expect("decode animated webp");
+        let f0 = decoded.get_frame(0).expect("frame 0");
+        let (w, h) = (f0.width() as usize, f0.height() as usize);
+        let data = f0.get_image();
+        assert_eq!(data.len(), w * h * 4, "decoded as RGBA (alpha channel present)");
+        assert_eq!(data[3], 0, "top-left pixel stayed transparent");
+    }
+}
