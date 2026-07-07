@@ -16,7 +16,7 @@ settle_ms = 3500
 quit_keys = ["C-d"]
 
 [[scene]]
-card    = { lines = ["ansidrama", "no browser · no ffmpeg · no tmux"], fg = "#fef9c3" }
+card    = { lines = ["AnsiDrama", "no browser · no ffmpeg · no tmux"], fg = "#fef9c3" }
 hold_cs = 300
 
 # Reveal the (real, colourised) inner script.
