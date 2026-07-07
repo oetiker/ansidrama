@@ -18,12 +18,12 @@ and rasterizes it with a bundled monospace font, hand-painting box-drawing and
 block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
 
-```
-┌───────────┐     parse ANSI grid        rasterize (bundled font,      lossless
-│ .ansi     │ ──▶ ┌──────────────┐ ──▶   hand-painted box/blocks) ──▶  animated
-│ snapshots │     │ Vec<Vec<Cell>>│       ┌──────────┐                  WebP
-└───────────┘     └──────────────┘       │ RgbaImage │                (loops)
-   or a title card ───────────────────▶  └──────────┘
+```mermaid
+flowchart LR
+    A[".ansi snapshots"] -->|parse ANSI grid| B["cell grid<br>Vec&lt;Vec&lt;Cell&gt;&gt;"]
+    T["title card"] -->|synthesize| C["RgbaImage"]
+    B -->|"rasterize (bundled font,<br>hand-painted box / blocks)"| C
+    C -->|encode| D["lossless animated<br>WebP (loops)"]
 ```
 
 ## Two commands
