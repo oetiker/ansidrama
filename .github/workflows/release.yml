@@ -175,7 +175,11 @@ jobs:
       - name: Extract release notes
         run: |
           VERSION="${{ needs.version.outputs.version }}"
-          sed -n "/^## ${VERSION}/,/^## [0-9]/p" CHANGES.md | sed '$d' > release-notes.md
+          # Print this version's section up to the next `## <version>` heading.
+          # Drop that trailing heading — but ONLY if the last printed line IS one:
+          # for the last section in the file (e.g. the first-ever release) the range
+          # runs to EOF, so a blind `$d` would delete real content (### Fixed).
+          sed -n "/^## ${VERSION}/,/^## [0-9]/p" CHANGES.md | sed '${/^## [0-9]/d}' > release-notes.md
           echo "Release notes:"; cat release-notes.md
 
       - name: List artifacts
