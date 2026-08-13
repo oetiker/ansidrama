@@ -199,7 +199,12 @@ cargo install --path .        # or: cargo build --release
 ```
 
 `record` embeds its own terminal (a PTY + VT parser), so it needs **nothing but
-the binary** — same as `encode`. The font (JetBrains Mono, OFL) is bundled.
+the binary** — same as `encode`. Three fonts are bundled and consulted in order,
+so a recording never depends on what the host has installed: JetBrains Mono for
+text, Symbols Nerd Font for Nerd Font icons (the Private Use Area codepoints that
+starship, eza, lazygit and friends draw), and JuliaMono for Unicode's symbol
+blocks — arrows, geometric shapes, dingbats, braille. A codepoint none of them
+has draws a visible box rather than nothing at all.
 
 ## How it compares
 
@@ -213,5 +218,7 @@ that for determinism, sharpness and a zero-dependency single binary.
 
 ## License
 
-MIT (see `LICENSE-MIT`). Bundled JetBrains Mono is under the SIL Open Font
-License (see `assets/JetBrainsMono-LICENSE.txt`).
+MIT (see `LICENSE-MIT`). The bundled fonts are under the SIL Open Font License:
+JetBrains Mono (`assets/JetBrainsMono-LICENSE.txt`), Symbols Nerd Font
+(`assets/SymbolsNerdFont-LICENSE.txt`) and JuliaMono
+(`assets/JuliaMono-LICENSE.txt`).
