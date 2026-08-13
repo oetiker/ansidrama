@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+### Fixed
+
+## 0.2.0 - 2026-08-13
+
+### New
+
 - **`record`**: `react_ms` (default 500) — how long the app is given to *begin* answering an input before a quiet terminal counts as "finished drawing".
 
 ### Changed
