@@ -43,6 +43,9 @@ assets = [
     ["man/ansidrama.1", "usr/share/man/man1/", "644"],
     ["README.md", "usr/share/doc/ansidrama/README.md", "644"],
     ["LICENSE-MIT", "usr/share/doc/ansidrama/LICENSE-MIT", "644"],
+    ["assets/JetBrainsMono-LICENSE.txt", "usr/share/doc/ansidrama/JetBrainsMono-LICENSE.txt", "644"],
+    ["assets/SymbolsNerdFont-LICENSE.txt", "usr/share/doc/ansidrama/SymbolsNerdFont-LICENSE.txt", "644"],
+    ["assets/JuliaMono-LICENSE.txt", "usr/share/doc/ansidrama/JuliaMono-LICENSE.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -53,4 +56,7 @@ assets = [
     { source = "man/ansidrama.1", dest = "/usr/share/man/man1/ansidrama.1", mode = "644", doc = true },
     { source = "README.md", dest = "/usr/share/doc/ansidrama/README.md", mode = "644", doc = true },
     { source = "LICENSE-MIT", dest = "/usr/share/doc/ansidrama/LICENSE-MIT", mode = "644", doc = true },
+    { source = "assets/JetBrainsMono-LICENSE.txt", dest = "/usr/share/doc/ansidrama/JetBrainsMono-LICENSE.txt", mode = "644", doc = true },
+    { source = "assets/SymbolsNerdFont-LICENSE.txt", dest = "/usr/share/doc/ansidrama/SymbolsNerdFont-LICENSE.txt", mode = "644", doc = true },
+    { source = "assets/JuliaMono-LICENSE.txt", dest = "/usr/share/doc/ansidrama/JuliaMono-LICENSE.txt", mode = "644", doc = true },
 ]

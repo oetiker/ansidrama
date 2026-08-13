@@ -19,7 +19,9 @@ ansidrama \- assemble or record a terminal session into a crisp animated WebP
 AnsiDrama
 turns a terminal session into a small, lossless, looping animated WebP.
 It renders each frame itself \(em parsing the terminal cell grid and
-rasterizing it with a bundled monospace font, hand\-painting box\-drawing and
+rasterizing it with bundled monospace fonts \(em JetBrains Mono for text, Symbols
+Nerd Font for Nerd Font icons, JuliaMono for Unicode symbol blocks \(em
+hand\-painting box\-drawing and
 block glyphs so characters reach the exact cell edges and tile seamlessly.
 Every run is deterministic: the same script produces the same bytes. There are
 no runtime dependencies \(em a single static binary, no browser, no ffmpeg, no
@@ -70,8 +72,8 @@ snapshot, relative to the config) or
 Top level:
 .BR launch " (the shell command line), "
 .BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
-.BR max_fps ", " out ", " env ", " startup_ms ", " settle_ms ", " type_cs ", "
-.BR move_cs ", " quit_keys ", " cursor .
+.BR max_fps ", " out ", " env ", " startup_ms ", " settle_ms ", " react_ms ", "
+.BR type_cs ", " move_cs ", " quit_keys ", " cursor .
 Each
 .B [[scene]]
 performs exactly one action \(em
@@ -80,6 +82,16 @@ plus timing
 .RB ( hold_cs ", " type_cs ", " move_cs ).
 A scene expands into many frames: one captured per key, per typed character,
 and per mouse cell\-step.
+.PP
+.B react_ms
+is how long the app is given to
+.I begin
+answering an input before a quiet terminal counts as "finished drawing".
+A quiet terminal means both "done" and "not started yet"; without this floor an
+input the app is slow to answer \(em a theme switch that re-renders a whole
+document, a click tmux takes a moment over \(em is captured as the screen from
+before it, and the change shows up one scene late. It is only spent in full by
+an input that draws nothing at all.
 .SS "title cards"
 A
 .B card
@@ -127,6 +139,7 @@ The output WebP (from
 .SH AUTHOR
 Tobias Oetiker <tobi@oetiker.ch>
 .SH LICENSE
-MIT. The bundled JetBrains Mono font is under the SIL Open Font License.
+MIT. The bundled fonts \(em JetBrains Mono, Symbols Nerd Font and JuliaMono \(em
+are under the SIL Open Font License.
 .SH "SEE ALSO"
 Project home: https://github.com/oetiker/ansidrama
