@@ -69,6 +69,11 @@ pub fn screen_caret(screen: &vt100::Screen) -> Option<(u32, u32)> {
 struct Shared {
     parser: vt100::Parser,
     last_activity: Instant,
+    /// When the last input was written, and whether the child has produced any
+    /// output since. Together they let `settle` tell a child that has *finished*
+    /// answering from one that has not *started*.
+    last_send: Instant,
+    awaiting_reply: bool,
     eof: bool,
 }
 
@@ -101,6 +106,7 @@ fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
                 let mut s = lock.lock().unwrap();
                 s.parser.process(&buf[..n]);
                 s.last_activity = Instant::now();
+                s.awaiting_reply = false;
                 cvar.notify_all();
             }
         }
@@ -160,6 +166,8 @@ impl Term {
             Mutex::new(Shared {
                 parser: vt100::Parser::new(rows, cols, 0),
                 last_activity: Instant::now(),
+                last_send: Instant::now(),
+                awaiting_reply: false,
                 eof: false,
             }),
             Condvar::new(),
@@ -179,9 +187,24 @@ impl Term {
         })
     }
 
-    /// Block until the PTY has been idle for `idle`, or `cap` total elapses,
-    /// or the child exits.
-    pub fn settle(&mut self, idle: Duration, cap: Duration) {
+    /// Block until the child has answered the last input and the PTY has then
+    /// been idle for `idle` — or `cap` total elapses, or the child exits.
+    ///
+    /// A quiet PTY has two meanings, and they need different answers: the child
+    /// has *finished* drawing, or it has not *started*. Idle alone reads both as
+    /// "done", so an input the child is slow to answer — a theme switch that
+    /// re-renders a whole document, a click tmux takes a moment over — is
+    /// captured as the screen from before it, and the change surfaces one frame
+    /// late (or, if the answer is split across the window, half-drawn: a status
+    /// bar naming a theme the screen is not wearing).
+    ///
+    /// So while an input is outstanding and unanswered, `idle` cannot end the
+    /// wait: the child gets up to `react` to produce its first byte. Once any
+    /// byte arrives the ordinary idle rule takes over, which costs a responsive
+    /// child nothing. `react` is only spent in full by an input that draws
+    /// nothing at all (a no-op key, a mouse release), so keep `cap` above
+    /// `react + idle` or it will cut the wait short again.
+    pub fn settle(&mut self, react: Duration, idle: Duration, cap: Duration) {
         let (lock, cvar) = &*self.shared;
         let start = Instant::now();
         let mut s = lock.lock().unwrap();
@@ -189,16 +212,24 @@ impl Term {
             if s.eof {
                 return;
             }
-            if s.last_activity.elapsed() >= idle {
-                return;
-            }
             if start.elapsed() >= cap {
                 return;
             }
-            let wait = idle
-                .saturating_sub(s.last_activity.elapsed())
-                .min(cap.saturating_sub(start.elapsed()))
-                .max(Duration::from_millis(1));
+            // An unanswered input still inside its react window: keep waiting
+            // even though the PTY is quiet — the quiet is the child thinking.
+            let react_left = react.saturating_sub(s.last_send.elapsed());
+            let awaiting = s.awaiting_reply && !react_left.is_zero();
+            if !awaiting && s.last_activity.elapsed() >= idle {
+                return;
+            }
+            let until_idle = idle.saturating_sub(s.last_activity.elapsed());
+            let wait = if awaiting {
+                react_left.max(until_idle)
+            } else {
+                until_idle
+            }
+            .min(cap.saturating_sub(start.elapsed()))
+            .max(Duration::from_millis(1));
             s = cvar.wait_timeout(s, wait).unwrap().0;
         }
     }
@@ -227,7 +258,10 @@ impl Term {
         {
             let (lock, cvar) = &*self.shared;
             let mut s = lock.lock().unwrap();
-            s.last_activity = Instant::now();
+            let now = Instant::now();
+            s.last_activity = now;
+            s.last_send = now;
+            s.awaiting_reply = true;
             cvar.notify_all();
         }
         Ok(())
@@ -314,7 +348,11 @@ mod pty_tests {
     fn wait_for_row0(term: &mut Term, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            term.settle(Duration::from_millis(100), Duration::from_millis(500));
+            term.settle(
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(500),
+            );
             let row0: String = term.grid()[0].iter().map(|c| c.ch).collect();
             if row0.contains(needle) || Instant::now() >= deadline {
                 return row0;
@@ -334,12 +372,52 @@ mod pty_tests {
         assert_eq!(grid[0].len(), 20);
     }
 
+    /// A key whose answer starts *later* than `idle` must not be captured early.
+    ///
+    /// `settle` cannot tell "the app has finished answering" from "the app has
+    /// not started answering yet" — both look like a quiet PTY. Without a floor
+    /// on the wait for the first reply, the capture returns the pre-keystroke
+    /// screen and the change shows up one scene late.
+    #[test]
+    fn settle_waits_for_a_late_first_reply() {
+        let env = BTreeMap::new();
+        // Echo off, so the keystroke itself is not the "reply": the app goes
+        // quiet for 600ms — twice `idle` — before it prints anything.
+        // `READY` is printed *after* echo is off, and waited for: sending the key
+        // before the child reaches `stty` would let the tty echo it, and that
+        // echo — not the app — would be the reply this test is about.
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; read -n1 k; sleep 0.6; printf 'LATE'; sleep 2",
+            &env,
+        )
+        .unwrap();
+        let row0 = wait_for_row0(&mut term, "READY");
+        assert!(row0.contains("READY"), "child never started: {row0:?}");
+        term.send_key("x").unwrap();
+        term.settle(
+            Duration::from_millis(2000), // react: wait for the app to start
+            Duration::from_millis(100),  // idle
+            Duration::from_millis(5000), // cap
+        );
+        let row0: String = term.grid()[0].iter().map(|c| c.ch).collect();
+        assert!(
+            row0.contains("LATE"),
+            "captured before the app answered: {row0:?}"
+        );
+    }
+
     #[test]
     fn send_key_reaches_app() {
         let env = BTreeMap::new();
         // `read -n1 k` echoes the key we send back onto the screen.
         let mut term = Term::spawn(20, 3, "read -n1 k; printf \"got:$k\"; sleep 2", &env).unwrap();
-        term.settle(Duration::from_millis(100), Duration::from_millis(500));
+        term.settle(
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(500),
+        );
         term.send_key("x").unwrap();
         let row0 = wait_for_row0(&mut term, "got:x");
         assert!(row0.contains("got:x"), "row0 = {row0:?}");

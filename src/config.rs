@@ -219,6 +219,14 @@ pub struct RecordConfig {
     /// Milliseconds to let the screen settle after an input before capturing.
     #[serde(default = "default_settle")]
     pub settle_ms: u64,
+    /// Milliseconds to wait for the app to *begin* answering an input before a
+    /// quiet PTY is accepted as "done". A quiet terminal means both "finished"
+    /// and "not started yet"; without this floor a keystroke the app is slow to
+    /// answer (a theme switch that re-renders a whole document, a click tmux
+    /// takes a moment over) is captured as the screen from *before* it, and the
+    /// change surfaces one scene late.
+    #[serde(default = "default_react")]
+    pub react_ms: u64,
     /// Default hold (centiseconds) for each per-key / per-typed-char frame.
     #[serde(default = "default_type_cs")]
     pub type_cs: u16,
@@ -240,6 +248,9 @@ fn default_startup() -> u64 {
 }
 fn default_settle() -> u64 {
     350
+}
+fn default_react() -> u64 {
+    500
 }
 fn default_type_cs() -> u16 {
     9

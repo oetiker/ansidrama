@@ -42,6 +42,7 @@ struct Recorder<'a> {
     renderer: Renderer,
     chrome: Chrome,
     idle: Duration,
+    react: Duration,
     cap: Duration,
     startup: Duration,
     min_cs: u16,
@@ -57,7 +58,14 @@ impl<'a> Recorder<'a> {
         let term = Term::spawn(cfg.cols as u16, cfg.rows as u16, &cfg.launch, &cfg.env)
             .context("start embedded terminal")?;
         let idle = Duration::from_millis(cfg.settle_ms);
-        let cap = idle.saturating_mul(8).max(Duration::from_millis(1500));
+        let react = Duration::from_millis(cfg.react_ms);
+        // `cap` is the absolute ceiling on one settle, so it has to leave room
+        // for the whole react-then-idle wait or it would silently reinstate the
+        // early capture it exists to prevent.
+        let cap = idle
+            .saturating_mul(8)
+            .max(Duration::from_millis(1500))
+            .max(react + idle.saturating_mul(2));
         let renderer = Renderer::new(cfg.font_px);
         let cell_h = renderer.cell_size().1;
         let chrome = match &cfg.chrome {
@@ -68,6 +76,7 @@ impl<'a> Recorder<'a> {
             renderer,
             chrome,
             idle,
+            react,
             cap,
             startup: Duration::from_millis(cfg.startup_ms),
             min_cs: min_hold_cs(cfg.max_fps),
@@ -91,15 +100,15 @@ impl<'a> Recorder<'a> {
     /// prompt (`pri` then `bash-5.2$` → `pribash-5.2$`). After the floor, let any
     /// remaining output settle normally.
     fn seed(&mut self) {
-        self.term.settle(self.startup, self.startup);
-        self.term.settle(self.idle, self.cap);
+        self.term.settle(Duration::ZERO, self.startup, self.startup);
+        self.term.settle(self.react, self.idle, self.cap);
         self.last_grid = self.term.grid();
         self.caret = self.term.caret();
     }
 
     /// Let the screen settle after an input, then re-read the grid and caret.
     fn capture(&mut self) {
-        self.term.settle(self.idle, self.cap);
+        self.term.settle(self.react, self.idle, self.cap);
         self.last_grid = self.term.grid();
         self.caret = self.term.caret();
     }
