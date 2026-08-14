@@ -363,6 +363,45 @@ fn scene_label(i: usize, s: &Scene) -> String {
     format!("scene {i:02} ({kind})")
 }
 
+/// Write the screen the recorder gave up on as a PNG beside `out_path`, and
+/// return where it landed.
+///
+/// Best-effort by construction: this runs while a *different* error is already
+/// on its way up, and losing that error to a failure in the diagnostic that
+/// explains it would be the worse outcome. `None` simply means the caller
+/// re-raises the original error unadorned.
+fn dump_failure_screen(
+    rec: &Recorder,
+    cfg: &RecordConfig,
+    out_path: &Path,
+) -> Option<std::path::PathBuf> {
+    let stem = out_path.file_stem()?.to_string_lossy().into_owned();
+    let png = out_path.with_file_name(format!("{stem}-failed.png"));
+    let acc = rec.sampler.states();
+    // `newest()`, not the last committed state: it is what "the screen right
+    // now" means, and it is the same screen whose text the error already
+    // quotes — the picture must not disagree with the words.
+    let state = acc.newest()?;
+    let renderer = Renderer::new(cfg.font_px);
+    let mut img = renderer.render(&state.grid, cfg.cols, cfg.rows);
+    if cfg.cursor {
+        if let Some((cx, cy)) = state.caret {
+            let cell = state
+                .grid
+                .get(cy as usize)
+                .and_then(|r| r.get(cx as usize))
+                .copied()
+                .unwrap_or(Cell { ch: ' ', fg: (0, 0, 0), bg: (255, 255, 255), bold: false });
+            renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
+        }
+    }
+    if let Some(parent) = png.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    img.save(&png).ok()?;
+    Some(png)
+}
+
 pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Path>) -> Result<()> {
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
@@ -378,7 +417,18 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let mut rec = Recorder::spawn(&cfg)?;
     rec.seed()?;
     for i in 0..cfg.scenes.len() {
-        rec.process(i)?;
+        // A failed capture — an `await` that never matched, above all — takes
+        // the last screen's *picture* with it, not just its text. `await`
+        // matches text only, so the interesting failure is "the text matched
+        // but the screen is wrong", and no text dump can show that.
+        if let Err(e) = rec.process(i) {
+            return Err(match dump_failure_screen(&rec, &cfg, &out_path) {
+                Some(p) => {
+                    e.context(format!("recording failed; last screen written to {}", p.display()))
+                }
+                None => e,
+            });
+        }
         eprintln!("  scene {i:02} → {} marks total", rec.marks.len());
         // A child that exits once the script is finished is a legitimate end.
         // One that exits with scenes still to play is not: everything after
@@ -530,7 +580,12 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
             let input = spec.input.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string());
             man.push_str(&format!("{i:04}\t{}\t{input}\t{kind}\t{}\n", spec.scene, spec.hold_cs));
         }
-        std::fs::write(d.join("manifest.tsv"), man).ok();
+        // Not `.ok()` like the PNGs above: a missing frame is obvious, a
+        // *stale* manifest left over from an earlier dump into the same
+        // directory is not, and an out-of-repo bisect trusts it. The frames
+        // are already written, so failing here loses nothing.
+        std::fs::write(d.join("manifest.tsv"), man)
+            .with_context(|| format!("write {}", d.join("manifest.tsv").display()))?;
     }
 
     if frames.is_empty() {
