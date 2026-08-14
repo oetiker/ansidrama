@@ -494,6 +494,46 @@ mod acc_tests {
         );
     }
 
+    /// Widening `observe`'s equality to grid+caret makes caret *visibility*
+    /// state-forming too, not just caret position — `screen_caret` returns
+    /// `None` while the cursor is hidden (`?25l`) and `Some((x,y))` while
+    /// visible, and `observe` treats those as different states exactly like
+    /// a position change. A hide/show that doesn't outlast `persist` — a TUI
+    /// blanking the cursor around a fast redraw — is the common case, and it
+    /// falls out of the existing pending/committed rule for free: each blip
+    /// is superseded before it ever persists, same as a torn mid-repaint
+    /// grid. Assert no extra state survives.
+    #[test]
+    fn a_transient_caret_hide_is_dropped_like_a_transient_grid_change() {
+        let t0 = Instant::now();
+        let mut a = StateAccumulator::new(ms(40));
+        a.observe(g('a'), Some((0, 0)), t0);
+        a.observe(g('a'), None, t0 + ms(5)); // cursor hidden mid-redraw
+        a.observe(g('a'), Some((0, 0)), t0 + ms(10)); // cursor back, same spot
+        a.observe(g('a'), Some((0, 0)), t0 + ms(60)); // this one survives persist
+        assert_eq!(a.committed().len(), 1, "the hide/show blip must not add a state");
+        assert_eq!(a.committed()[0].caret, Some((0, 0)));
+    }
+
+    /// The other side of the same boundary: a cursor hidden for longer than
+    /// `persist` really is a different, held screen — no cursor drawn — and
+    /// it earns a committed frame just like any other change that survives
+    /// that long would.
+    #[test]
+    fn a_caret_hidden_past_persist_is_committed() {
+        let t0 = Instant::now();
+        let mut a = StateAccumulator::new(ms(40));
+        a.observe(g('a'), Some((0, 0)), t0);
+        a.observe(g('a'), None, t0 + ms(5)); // cursor hidden
+        a.observe(g('a'), None, t0 + ms(60)); // stays hidden past persist
+        assert_eq!(a.committed().len(), 1);
+        assert_eq!(
+            a.committed()[0].caret,
+            None,
+            "the hidden state itself must be what commits"
+        );
+    }
+
     #[test]
     fn tick_promotes_a_persisted_state_without_a_grid() {
         let t0 = Instant::now();

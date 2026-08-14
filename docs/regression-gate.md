@@ -15,7 +15,14 @@ Expect no output. Any difference is either a fixed frame or a regression —
 inspect it.
 
 **What this does not cover:** the default configuration, and therefore the
-app-driven path. Those rules are covered by the `assemble` unit tests.
+app-driven path. Those rules are covered by the `assemble` unit tests. It
+also cannot exercise anything that only matters *through* the persist
+window — `persist_ms` is pinned high specifically to suppress
+persistence-driven commits — which is why the caret fix in Run 1/2 below
+needed its own unit tests in `sampler::acc_tests`
+(`a_transient_caret_hide_is_dropped_like_a_transient_grid_change` and
+`a_caret_hidden_past_persist_is_committed`) rather than being provable by
+the gate alone.
 
 ## Run log
 
