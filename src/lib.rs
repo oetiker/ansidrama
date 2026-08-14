@@ -29,6 +29,8 @@ pub mod raster;
 #[cfg(unix)]
 pub mod record;
 #[cfg(unix)]
+pub mod sampler;
+#[cfg(unix)]
 pub mod term;
 
 use crate::chrome::Chrome;
