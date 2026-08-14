@@ -75,6 +75,11 @@ struct Shared {
     last_send: Instant,
     awaiting_reply: bool,
     eof: bool,
+    /// Diagnostics: bytes read, and reads performed, since the last input was
+    /// sent. A settle that returns with `reads_since_send == 0` captured a
+    /// screen the child had not yet answered onto.
+    bytes_since_send: u64,
+    reads_since_send: u32,
 }
 
 /// An embedded terminal: a child on a PTY, plus a `vt100` parser fed by a
@@ -91,6 +96,10 @@ pub struct Term {
 /// Read the PTY master until EOF, feeding bytes to the parser and stamping
 /// `last_activity` so `settle` can detect quiescence.
 fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
+    // Debug aid: `ANSIDRAMA_DUMP_PTY=<path>` tees every byte the child writes,
+    // so a suspect repaint can be replayed through the parser offline.
+    let mut dump =
+        std::env::var_os("ANSIDRAMA_DUMP_PTY").and_then(|p| std::fs::File::create(p).ok());
     let mut buf = [0u8; 8192];
     loop {
         match master.read(&mut buf) {
@@ -103,14 +112,36 @@ fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
             }
             Ok(n) => {
                 let (lock, cvar) = &*shared;
+                if let Some(f) = dump.as_mut() {
+                    let _ = f.write_all(&buf[..n]);
+                }
                 let mut s = lock.lock().unwrap();
                 s.parser.process(&buf[..n]);
                 s.last_activity = Instant::now();
                 s.awaiting_reply = false;
+                s.bytes_since_send += n as u64;
+                s.reads_since_send += 1;
                 cvar.notify_all();
             }
         }
     }
+}
+
+/// Debug aid: `ANSIDRAMA_TRACE=1` writes one line per `settle` to stderr —
+/// why the wait ended, how long it took, and how much the child had said since
+/// the input was sent. `reads=0` means the capture that follows shows a screen
+/// the child never answered onto.
+fn trace_settle(why: &str, start: Instant, s: &Shared) {
+    if std::env::var_os("ANSIDRAMA_TRACE").is_none() {
+        return;
+    }
+    eprintln!(
+        "settle {why:>4} after {:>6.1}ms  since_send={:>6.1}ms  reads={:<3} bytes={}",
+        start.elapsed().as_secs_f32() * 1000.0,
+        s.last_send.elapsed().as_secs_f32() * 1000.0,
+        s.reads_since_send,
+        s.bytes_since_send,
+    );
 }
 
 impl Term {
@@ -169,6 +200,8 @@ impl Term {
                 last_send: Instant::now(),
                 awaiting_reply: false,
                 eof: false,
+                bytes_since_send: 0,
+                reads_since_send: 0,
             }),
             Condvar::new(),
         ));
@@ -210,16 +243,19 @@ impl Term {
         let mut s = lock.lock().unwrap();
         loop {
             if s.eof {
+                trace_settle("eof", start, &s);
                 return;
             }
             if start.elapsed() >= cap {
+                trace_settle("cap", start, &s);
                 return;
             }
             // An unanswered input still inside its react window: keep waiting
             // even though the PTY is quiet — the quiet is the child thinking.
             let react_left = react.saturating_sub(s.last_send.elapsed());
-            let awaiting = s.awaiting_reply && !react_left.is_zero();
+            let awaiting = !react_left.is_zero();
             if !awaiting && s.last_activity.elapsed() >= idle {
+                trace_settle("idle", start, &s);
                 return;
             }
             let until_idle = idle.saturating_sub(s.last_activity.elapsed());
@@ -262,6 +298,8 @@ impl Term {
             s.last_activity = now;
             s.last_send = now;
             s.awaiting_reply = true;
+            s.bytes_since_send = 0;
+            s.reads_since_send = 0;
             cvar.notify_all();
         }
         Ok(())
@@ -405,6 +443,55 @@ mod pty_tests {
         assert!(
             row0.contains("LATE"),
             "captured before the app answered: {row0:?}"
+        );
+    }
+
+    /// Output belonging to the *previous* input must not count as this input's
+    /// reply.
+    ///
+    /// `read_loop` clears `awaiting_reply` on any byte. When the previous input's
+    /// repaint is still draining as the next input is sent, those leftover bytes
+    /// satisfy the react condition, `idle` takes over, and the quiet gap before
+    /// the real answer ends the wait early — the capture shows the previous
+    /// input's screen. Raising `react` cannot help: react is not waited out, it
+    /// is *satisfied*.
+    #[test]
+    fn settle_is_not_disarmed_by_the_previous_inputs_output() {
+        let env = BTreeMap::new();
+        // Key 1 answers late (TRAIL, ~400ms) via a background job, so its output
+        // lands *after* key 2 has been sent. Key 2 answers later still (LATE).
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; \
+             read -n1 a; (sleep 0.4; printf 'TRAIL') & \
+             read -n1 b; sleep 1.2; printf 'LATE'; sleep 3",
+            &env,
+        )
+        .unwrap();
+        let row0 = wait_for_row0(&mut term, "READY");
+        assert!(row0.contains("READY"), "child never started: {row0:?}");
+
+        // Key 1: return before its trailing output arrives.
+        term.send_key("a").unwrap();
+        term.settle(
+            Duration::ZERO,
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        );
+
+        // Key 2: its reply is LATE. TRAIL (key 1's) arrives first and must not
+        // be mistaken for it.
+        term.send_key("b").unwrap();
+        term.settle(
+            Duration::from_millis(2000), // react
+            Duration::from_millis(350),  // idle
+            Duration::from_millis(5000), // cap
+        );
+        let row0: String = term.grid()[0].iter().map(|c| c.ch).collect();
+        assert!(
+            row0.contains("LATE"),
+            "previous input's output disarmed the react window: {row0:?}"
         );
     }
 
