@@ -19,6 +19,7 @@ pub fn screen_text(grid: &[Vec<Cell>]) -> String {
 }
 
 /// A compiled screen predicate.
+#[derive(Debug)]
 pub struct Pattern {
     re: Regex,
     row: Option<i32>,
