@@ -375,8 +375,9 @@ impl RecordConfig {
             if s.animated {
                 bail!(
                     "scene {i} sets both `await` and `animated = true`, but an animated \
-                     scene never waits for a settled screen — it dwells for `hold_cs` and \
-                     captures whatever is there, so the `await` could only be ignored.\n\
+                     scene never waits for a settled screen — it dwells for each input's \
+                     authored time and captures whatever is there, so the `await` could \
+                     only be ignored.\n\
                      remove one of the two"
                 );
             }

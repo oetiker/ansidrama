@@ -188,6 +188,21 @@ animated = true                              # a spinner/clock/progress bar that
 hold_cs = 200
 ```
 
+Pick `await` text that **only the finished screen contains**. The recorder
+gives the app `change_ms` to react before a match is allowed to end the wait,
+which rules out an instant stale match — but once that grace expires, a
+pattern that was already on screen *before* the input satisfies the wait just
+the same. Nothing about timing can tell "the app's answer" from "text that
+happened to be there already"; only the choice of pattern can.
+
+`animated = true` turns the wait off for that scene: there is no settled
+moment to wait for, so the recorder **dwells** instead — for each input's own
+authored hold, which is `type_cs`/`move_cs` for every input but the scene's
+last and `hold_cs` only for that last one — and takes whatever the app drew
+during it. A multi-key or `text` animated scene therefore dwells once per
+key, not once for `hold_cs`. Global `realtime = true` does the same to every
+scene.
+
 `await` can't be combined with everything: it is rejected at config load (not
 silently ignored) on a `card` scene, on a scene with `animated = true`, or
 anywhere under a top-level `realtime = true` — in each case the recorder
@@ -223,6 +238,14 @@ settled result and holds for the duration the script authored (`type_cs`,
 `move_cs`, or `hold_cs`); **`app-driven`** is the app moving on its own after
 the input has already settled, and holds for its own real measured duration;
 **`card`** is a synthetic title card.
+
+One exception to that reading: a **pointer-move** frame — a cell-step of the
+animated cursor between two positions, which reuses the screen underneath and
+sends nothing to the app — is also written as `app-driven`, but holds for the
+authored `move_cs` rather than a measured duration. Its `scene` column is
+correct, so a bisect still lands on the right scene; only don't read
+"`app-driven`" as "measured" on a row whose scene is a `click`, `drag` or
+`scroll`.
 
 ## Title cards
 

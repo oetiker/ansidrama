@@ -133,3 +133,32 @@ Artifacts:
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-old/`
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-buggy-run1/` (Run 1's HEAD output, kept for reference)
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-fixed-run2/` (Run 2's HEAD output — the clean run)
+
+### Run 3 — 2026-08-14, after the final fix wave
+
+Same subject, same `hello-new.toml`, same Run 1/2 `out-old/` baseline (0.2.0
+at `2e5195f`, kept rather than rebuilt). HEAD rebuilt `--release` with the
+whole-branch review's fix wave applied — the `max_capture_mb` check on the
+animated path, the propagated `manifest.tsv` write error, the `owns`
+predicate extraction in `assemble`, saturating `cs()`, and the await-failure
+PNG.
+
+Of those, two touch the gate's own path and are the reason it was re-run:
+extracting `owns` rewrites the window predicate all three emitting branches
+share, and a saturating `cs()` changes the arithmetic every measured frame
+goes through.
+
+```sh
+ansidrama-head record hello-new.toml --dump-png out-new-fixwave/
+```
+
+Frame counts: 59 on both sides. HEAD's `manifest.tsv`: 59 rows, 58
+`input-driven` + 1 `card`, no `app-driven` (as expected with `persist_ms`
+pinned high).
+
+Comparison: **59/59 byte-identical, 0 differ, 0 missing.**
+
+Artifacts:
+
+- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-fixwave/`
+- comparison script: `.../scratchpad/gate/compare-fixwave.sh`

@@ -152,10 +152,20 @@ or anywhere under top\-level
 .BR realtime " = true" ,
 since in each of those cases it could never be honoured.
 .B animated
-marks a screen that never holds still (spinner, clock, progress bar): the
-scene dwells for
+marks a screen that never holds still (spinner, clock, progress bar): instead
+of waiting for stability, the scene dwells for each input's own authored hold
+\(em
+.BR type_cs / move_cs
+for every input but the scene's last, and
 .B hold_cs
-and captures whatever is there instead of waiting for stability.
+only for that last one \(em and captures whatever the app drew during it. A
+multi\-key or
+.B text
+animated scene therefore dwells once per key, not once for
+.BR hold_cs .
+Top\-level
+.BR realtime " = true"
+does the same to every scene.
 .PP
 Migration:
 .B settle_ms
