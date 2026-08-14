@@ -24,6 +24,7 @@ pub mod grid;
 #[cfg(unix)]
 pub mod keys;
 pub mod mouse;
+pub mod pattern;
 pub mod raster;
 #[cfg(unix)]
 pub mod record;
