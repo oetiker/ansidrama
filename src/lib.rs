@@ -14,6 +14,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
+pub mod assemble;
 pub mod chrome;
 pub mod color;
 pub mod config;
