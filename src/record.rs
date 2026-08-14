@@ -141,21 +141,23 @@ impl<'a> Recorder<'a> {
         let out = if animated {
             // A screen that never holds still has no "settled" moment to wait
             // for. Dwell for the authored time and take whatever is on screen.
-            std::thread::sleep(Duration::from_millis(authored_cs as u64 * 10));
+            let dwell = Duration::from_millis(authored_cs as u64 * 10);
+            let before = self.sampler.states().last_change();
+            std::thread::sleep(dwell);
             let mut a = self.sampler.states();
             let now = Instant::now();
-            // Either there was a pending state to promote, or the sampler
-            // thread already promoted it. `Sampler::start` commits one state
-            // before any of this can run, so "neither" is a broken invariant
-            // rather than a reachable case — say so instead of indexing 0 into
-            // an empty log.
-            let state = match a.force_commit(now) {
-                Some(idx) => idx,
-                None => a.committed().len().checked_sub(1).expect(
-                    "Sampler::start observes one state before any capture can run; \
-                     committed() must not be empty here",
-                ),
-            };
+            // `moved` here means the screen actually changed during the dwell.
+            // `moved=no` on an animated scene is a real red flag: a screen
+            // declared animated that in fact held still contributes no frames
+            // at all, because `assemble` measures animated scenes rather than
+            // owing them one frame each.
+            crate::sampler::trace("dwell", dwell, a.last_change() > before, None, &a);
+            // `assemble` gates the settled state on `!animated`, so this index
+            // is never read downstream — an animated scene measures every
+            // frame. The call is still load-bearing for its side effect:
+            // force-committing pins the screen at the end of the dwell into
+            // the state log, which is where the scene's last frame comes from.
+            let state = a.settled_index(now);
             WaitOutcome { state, hit_cap: false }
         } else {
             let want = if want {
@@ -355,6 +357,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     if cfg.scenes.is_empty() {
         bail!("config has no [[scene]] entries");
     }
+    cfg.validate().context("record config")?;
     let base = config_path.parent().unwrap_or(Path::new("."));
     let out_path = resolve_out(out_override, cfg.out.as_deref(), base, config_path)?;
 
@@ -429,9 +432,25 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
                 cfg.card_font_px,
                 cfg.card_subtitle_px,
             )?,
-            Source::Reuse => last_screen
-                .clone()
-                .expect("a pointer-only move always follows a rendered screen"),
+            // Usually a pointer-only move follows a rendered screen, but not
+            // always: an animated input contributes no frames at all when no
+            // state timestamp falls inside its window, so under `realtime` two
+            // mouse scenes over an unchanging screen reach here with nothing
+            // rendered yet. Fall back to a committed state — a slightly early
+            // screen is a far better outcome than a panic on a config that
+            // parses cleanly.
+            Source::Reuse => match &last_screen {
+                Some(img) => img.clone(),
+                None => {
+                    let state = acc
+                        .committed()
+                        .last()
+                        .expect("Sampler::start commits one state before any frame exists");
+                    let img = renderer.render(&state.grid, cfg.cols, cfg.rows);
+                    last_screen = Some(img.clone());
+                    img
+                }
+            },
         };
 
         // A frame with a pointer position draws the pointer; otherwise
@@ -495,6 +514,91 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
         total_ms(&frames) as f32 / 1000.0
     );
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod drive_tests {
+    use super::*;
+    use crate::pattern::screen_text;
+
+    /// Drive a whole config through the recorder — no rendering, no output
+    /// file — and return, for each input mark in order, the text of the screen
+    /// its wait settled on.
+    fn settled_screens(src: &str) -> Result<Vec<String>> {
+        let cfg: RecordConfig = toml::from_str(src).unwrap();
+        cfg.validate().unwrap();
+        let mut rec = Recorder::spawn(&cfg)?;
+        rec.seed()?;
+        for i in 0..cfg.scenes.len() {
+            rec.process(i)?;
+        }
+        let acc = rec.sampler.states();
+        Ok(rec
+            .marks
+            .iter()
+            .filter_map(|m| match m {
+                Mark::Input(i) => Some(screen_text(&acc.committed()[i.settled].grid)),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// A scene's `await` belongs to its LAST input, not its first — the rule
+    /// that decides whether a recording is correct or silently one screen
+    /// stale.
+    ///
+    /// The child prints `ONE` after the first key and `DONE` only after the
+    /// second. Attached to the last key, as it must be, both waits settle
+    /// normally. Attached to the first key — or to every key — that first wait
+    /// would spend its whole `await_ms` hunting a screen that cannot exist
+    /// until the second key is sent, and `settled_screens` returns an error
+    /// instead. So this test discriminates the wiring rather than merely
+    /// exercising it.
+    #[test]
+    fn await_is_attached_to_the_scenes_final_key() {
+        let src = r#"
+launch = "stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; printf ' DONE'; sleep 5"
+cols = 30
+rows = 3
+startup_ms = 300
+await_ms = 2500
+
+[[scene]]
+keys = ["a", "b"]
+await = "DONE"
+"#;
+        let screens = settled_screens(src).expect("an await on the final key must settle");
+        assert_eq!(screens.len(), 2, "one input mark per key");
+        assert!(
+            screens[0].contains("ONE") && !screens[0].contains("DONE"),
+            "the first key settles on its own reply, before DONE exists: {:?}",
+            screens[0]
+        );
+        assert!(
+            screens[1].contains("DONE"),
+            "the last key must settle on the awaited screen: {:?}",
+            screens[1]
+        );
+    }
+
+    /// An empty `keys = []` scene sends nothing but still owes exactly one
+    /// wait and one mark — otherwise it contributes no frame at all.
+    #[test]
+    fn an_empty_keys_scene_still_produces_one_mark() {
+        let src = r#"
+launch = "printf 'HOLD ME'; sleep 5"
+cols = 30
+rows = 3
+startup_ms = 300
+
+[[scene]]
+keys = []
+hold_cs = 20
+"#;
+        let screens = settled_screens(src).unwrap();
+        assert_eq!(screens.len(), 1, "exactly one mark for a hold-the-screen scene");
+        assert!(screens[0].contains("HOLD ME"), "settled on: {:?}", screens[0]);
+    }
 }
 
 /// Resolve the output path: `-o` wins, else the config's `out` (relative to the

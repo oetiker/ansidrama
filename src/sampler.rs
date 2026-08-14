@@ -86,6 +86,24 @@ impl StateAccumulator {
         self.pending.as_ref().or_else(|| self.committed.last())
     }
 
+    /// The index of the state a capture is settling on: the state it just
+    /// force-committed, or — if the sampler thread already promoted it (the
+    /// normal case whenever `stable >= persist`) — the last committed state.
+    /// `Sampler::start` observes one state synchronously before any capture can
+    /// run, so `committed()` being empty here would be that invariant broken,
+    /// not a reachable outcome — made explicit rather than laundered into `0`.
+    pub fn settled_index(&mut self, now: Instant) -> usize {
+        match self.force_commit(now) {
+            Some(idx) => idx,
+            None => self.committed.len().checked_sub(1).unwrap_or_else(|| {
+                unreachable!(
+                    "Sampler::start observes one state before any wait() can run; \
+                     committed() must not be empty here"
+                )
+            }),
+        }
+    }
+
     pub fn last_change(&self) -> Instant {
         self.last_change
     }
@@ -245,6 +263,7 @@ impl Sampler {
         let base_change = a.last_change();
         loop {
             if self.over_budget.load(Ordering::Relaxed) {
+                trace("budget", start.elapsed(), false, want, &a);
                 let elapsed = self.start.elapsed();
                 bail!(
                     "recording exceeded max_capture_mb = {} after {} ({} states)\n\
@@ -268,11 +287,15 @@ impl Sampler {
             // Phase 1 is satisfied by any change, or by the grace expiring.
             let phase1 = moved || grace_left.is_zero();
             if phase1 && held && matched {
-                let idx = settled_index(&mut a, now);
+                // Which half of phase 1 let this through is the interesting
+                // bit: `grace` means the screen never moved at all.
+                trace(if moved { "moved" } else { "grace" }, elapsed, moved, want, &a);
+                let idx = a.settled_index(now);
                 return Ok(WaitOutcome { state: idx, hit_cap: false });
             }
             if elapsed >= timeout {
                 if let Some(p) = want {
+                    trace("nomatch", elapsed, moved, want, &a);
                     let seen = a
                         .newest()
                         .map(|s| crate::pattern::screen_text(&s.grid))
@@ -283,7 +306,8 @@ impl Sampler {
                         timeout.as_millis()
                     );
                 }
-                let idx = settled_index(&mut a, now);
+                trace("cap", elapsed, moved, want, &a);
+                let idx = a.settled_index(now);
                 return Ok(WaitOutcome { state: idx, hit_cap: true });
             }
             let nap = Duration::from_millis(2)
@@ -303,22 +327,38 @@ impl Drop for Sampler {
     }
 }
 
-/// The index of the state a `wait()` call is settling on: the state it just
-/// force-committed, or — if the sampler thread already promoted it (the
-/// normal case whenever `stable >= persist`) — the last committed state.
-/// `Sampler::start` observes one state synchronously before any `wait()` can
-/// run, so `committed()` being empty here would be that invariant broken,
-/// not a reachable outcome — made explicit rather than laundered into `0`.
-fn settled_index(a: &mut StateAccumulator, now: Instant) -> usize {
-    match a.force_commit(now) {
-        Some(idx) => idx,
-        None => a.committed().len().checked_sub(1).unwrap_or_else(|| {
-            unreachable!(
-                "Sampler::start observes one state before any wait() can run; \
-                 committed() must not be empty here"
-            )
-        }),
+/// Debug aid: `ANSIDRAMA_TRACE=1` writes one line per wait to stderr — the
+/// direct successor to 0.2.0's per-`settle` trace, with its fields adapted to
+/// the two-phase wait.
+///
+/// `why` is how the wait ended: `moved` (phase 1 satisfied by a real grid
+/// change — the healthy case), `grace` (phase 1 satisfied only by the grace
+/// expiring), `cap` (the bound was reached with no `await`), `nomatch` (an
+/// `await` that never matched — about to become an error), `budget`
+/// (`max_capture_mb`), `dwell` (an animated scene, which runs no wait at all).
+///
+/// `moved=no` is the successor to the old `reads=0` red flag: this input never
+/// changed the screen, so whatever frame it produces shows the screen from
+/// *before* it. A run full of `grace`/`moved=no` lines is dead air, which is
+/// exactly what this redesign set out to remove — and the only way to tell
+/// whether it did.
+pub(crate) fn trace(
+    why: &str,
+    elapsed: Duration,
+    moved: bool,
+    want: Option<&Pattern>,
+    a: &StateAccumulator,
+) {
+    if std::env::var_os("ANSIDRAMA_TRACE").is_none() {
+        return;
     }
+    eprintln!(
+        "wait {why:>7} after {:>7.1}ms  moved={:<3} states={:<4} await={}",
+        elapsed.as_secs_f32() * 1000.0,
+        if moved { "yes" } else { "no" },
+        a.committed().len(),
+        want.map(|p| p.source()).unwrap_or("-"),
+    );
 }
 
 /// Format a duration as e.g. `4m12s`, or `12s` under a minute, for the

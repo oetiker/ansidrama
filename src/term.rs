@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{Context, Result};
@@ -76,7 +76,7 @@ struct Shared {
 /// An embedded terminal: a child on a PTY, plus a `vt100` parser fed by a
 /// background reader thread. Dropping it reaps the child and joins the reader.
 pub struct Term {
-    shared: Arc<(Mutex<Shared>, Condvar)>,
+    shared: Arc<Mutex<Shared>>,
     master: std::fs::File,
     child: Child,
     reader: Option<JoinHandle<()>>,
@@ -86,7 +86,7 @@ pub struct Term {
 
 /// Read the PTY master until EOF, feeding bytes to the parser and bumping the
 /// generation counter so the sampler knows when there is something new to read.
-fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
+fn read_loop(mut master: std::fs::File, shared: Arc<Mutex<Shared>>) {
     // Debug aid: `ANSIDRAMA_DUMP_PTY=<path>` tees every byte the child writes,
     // so a suspect repaint can be replayed through the parser offline.
     let mut dump =
@@ -95,21 +95,16 @@ fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
     loop {
         match master.read(&mut buf) {
             Ok(0) | Err(_) => {
-                let (lock, cvar) = &*shared;
-                let mut s = lock.lock().unwrap();
-                s.eof = true;
-                cvar.notify_all();
+                shared.lock().unwrap().eof = true;
                 return;
             }
             Ok(n) => {
-                let (lock, cvar) = &*shared;
                 if let Some(f) = dump.as_mut() {
                     let _ = f.write_all(&buf[..n]);
                 }
-                let mut s = lock.lock().unwrap();
+                let mut s = shared.lock().unwrap();
                 s.parser.process(&buf[..n]);
                 s.generation += 1;
-                cvar.notify_all();
             }
         }
     }
@@ -164,14 +159,11 @@ impl Term {
         let master = std::fs::File::from(controller);
         let reader_master = master.try_clone().context("dup pty master")?;
 
-        let shared = Arc::new((
-            Mutex::new(Shared {
-                parser: vt100::Parser::new(rows, cols, 0),
-                eof: false,
-                generation: 0,
-            }),
-            Condvar::new(),
-        ));
+        let shared = Arc::new(Mutex::new(Shared {
+            parser: vt100::Parser::new(rows, cols, 0),
+            eof: false,
+            generation: 0,
+        }));
         let reader = {
             let shared = Arc::clone(&shared);
             std::thread::spawn(move || read_loop(reader_master, shared))
@@ -188,14 +180,12 @@ impl Term {
     }
 
     pub fn grid(&self) -> Vec<Vec<Cell>> {
-        let (lock, _) = &*self.shared;
-        let s = lock.lock().unwrap();
+        let s = self.shared.lock().unwrap();
         screen_to_grid(s.parser.screen(), self.rows, self.cols)
     }
 
     pub fn caret(&self) -> Option<(u32, u32)> {
-        let (lock, _) = &*self.shared;
-        let s = lock.lock().unwrap();
+        let s = self.shared.lock().unwrap();
         screen_caret(s.parser.screen())
     }
 
@@ -224,22 +214,20 @@ impl Term {
 /// be able to drive the terminal.
 #[derive(Clone)]
 pub struct ParserHandle {
-    shared: Arc<(Mutex<Shared>, Condvar)>,
+    shared: Arc<Mutex<Shared>>,
     rows: u16,
     cols: u16,
 }
 
 impl ParserHandle {
     pub fn generation(&self) -> u64 {
-        let (lock, _) = &*self.shared;
-        lock.lock().unwrap().generation
+        self.shared.lock().unwrap().generation
     }
 
     /// Grid, caret and generation from a single lock acquisition, so the three
     /// can never disagree about which screen they describe.
     pub fn snapshot(&self) -> (Vec<Vec<Cell>>, Option<(u32, u32)>, u64) {
-        let (lock, _) = &*self.shared;
-        let s = lock.lock().unwrap();
+        let s = self.shared.lock().unwrap();
         (
             screen_to_grid(s.parser.screen(), self.rows, self.cols),
             screen_caret(s.parser.screen()),
@@ -248,8 +236,7 @@ impl ParserHandle {
     }
 
     pub fn is_eof(&self) -> bool {
-        let (lock, _) = &*self.shared;
-        lock.lock().unwrap().eof
+        self.shared.lock().unwrap().eof
     }
 }
 
@@ -350,8 +337,19 @@ mod pty_tests {
     #[test]
     fn send_key_reaches_app() {
         let env = BTreeMap::new();
-        // `read -n1 k` echoes the key we send back onto the screen.
-        let mut term = Term::spawn(20, 3, "read -n1 k; printf \"got:$k\"; sleep 2", &env).unwrap();
+        // `read -n1 k` echoes the key we send back onto the screen. Wait for
+        // the child to announce it has reached the `read` before sending:
+        // without that synchronisation the test would depend on the pty
+        // buffering our key until bash gets there.
+        let mut term = Term::spawn(
+            20,
+            3,
+            "printf 'READY'; read -n1 k; printf \"\\rgot:$k\"; sleep 2",
+            &env,
+        )
+        .unwrap();
+        let row0 = wait_for_row0(&term, "READY");
+        assert!(row0.contains("READY"), "child never started: {row0:?}");
         term.send_key("x").unwrap();
         let row0 = wait_for_row0(&term, "got:x");
         assert!(row0.contains("got:x"), "row0 = {row0:?}");

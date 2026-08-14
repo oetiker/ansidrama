@@ -350,6 +350,49 @@ pub struct Scene {
     pub animated: bool,
 }
 
+impl RecordConfig {
+    /// Reject configurations whose parts contradict each other, at load rather
+    /// than silently mid-recording.
+    ///
+    /// Every case here is an `await` that *cannot* be honoured. An unhonoured
+    /// `await` is the worst possible failure for this feature: the author has
+    /// declared what "done" looks like, the parser has blessed it, and the
+    /// recorder then captures whatever a timing guess happens to land on — the
+    /// silently-wrong-frame shape the whole `await` mechanism exists to remove.
+    /// So none of these are warnings.
+    pub fn validate(&self) -> Result<()> {
+        for (i, s) in self.scenes.iter().enumerate() {
+            if s.await_spec.is_none() {
+                continue;
+            }
+            if s.card.is_some() {
+                bail!(
+                    "scene {i} sets `await` on a `card`, but a card is a synthetic frame \
+                     that never touches the terminal — there is no screen to wait for.\n\
+                     remove the `await` from that scene"
+                );
+            }
+            if s.animated {
+                bail!(
+                    "scene {i} sets both `await` and `animated = true`, but an animated \
+                     scene never waits for a settled screen — it dwells for `hold_cs` and \
+                     captures whatever is there, so the `await` could only be ignored.\n\
+                     remove one of the two"
+                );
+            }
+            if self.realtime {
+                bail!(
+                    "scene {i} sets `await`, but the config sets `realtime = true`, which \
+                     plays every scene at measured time and never waits — the `await` \
+                     could only be ignored.\n\
+                     remove the `await`, or remove `realtime`"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What a scene does — exactly one action (besides the hold).
 pub enum Action<'a> {
     Keys(&'a [String]),
@@ -469,6 +512,49 @@ mod await_tests {
         let c = cfg("keys = ['t']\nawait = { find = 'x', row = 9 }");
         let err = c.scenes[0].pattern(c.rows).unwrap_err().to_string();
         assert!(err.contains("row"), "error should name the row: {err}");
+    }
+
+    // --- an `await` that cannot be honoured is rejected at load ---
+
+    #[test]
+    fn await_on_an_animated_scene_is_rejected() {
+        let c = cfg("keys = ['t']\nanimated = true\nawait = 'done'");
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("scene 0"), "should name the scene: {err}");
+        assert!(err.contains("animated"), "should name the combination: {err}");
+    }
+
+    #[test]
+    fn await_under_global_realtime_is_rejected() {
+        let text = "launch = 'true'\ncols = 10\nrows = 4\nrealtime = true\n\
+                    [[scene]]\nkeys = ['t']\nawait = 'done'\n";
+        let c: RecordConfig = toml::from_str(text).unwrap();
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("scene 0"), "should name the scene: {err}");
+        assert!(err.contains("realtime"), "should name the combination: {err}");
+    }
+
+    #[test]
+    fn await_on_a_card_scene_is_rejected() {
+        let c = cfg("card = { text = 'hi' }\nawait = 'done'");
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("scene 0"), "should name the scene: {err}");
+        assert!(err.contains("card"), "should name the combination: {err}");
+    }
+
+    /// The guard must not fire on the configurations it is not about: an
+    /// `animated` or `realtime` scene with no `await` is perfectly legal, and
+    /// so is an `await` on an ordinary scene.
+    #[test]
+    fn validate_accepts_the_legitimate_combinations() {
+        cfg("keys = ['t']\nanimated = true").validate().unwrap();
+        cfg("keys = ['t']\nawait = 'done'").validate().unwrap();
+        cfg("card = { text = 'hi' }").validate().unwrap();
+        let rt: RecordConfig = toml::from_str(
+            "launch = 'true'\ncols = 10\nrows = 4\nrealtime = true\n[[scene]]\nkeys = ['t']\n",
+        )
+        .unwrap();
+        rt.validate().unwrap();
     }
 
     #[test]
