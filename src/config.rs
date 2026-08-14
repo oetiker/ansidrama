@@ -213,20 +213,10 @@ pub struct RecordConfig {
     /// Extra environment for the launched command.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Milliseconds to wait after launch before the first capture.
+    /// Milliseconds to wait after launch before the first capture — a floor,
+    /// so a slow first paint is fully drawn before anything is captured.
     #[serde(default = "default_startup")]
     pub startup_ms: u64,
-    /// Milliseconds to let the screen settle after an input before capturing.
-    #[serde(default = "default_settle")]
-    pub settle_ms: u64,
-    /// Milliseconds to wait for the app to *begin* answering an input before a
-    /// quiet PTY is accepted as "done". A quiet terminal means both "finished"
-    /// and "not started yet"; without this floor a keystroke the app is slow to
-    /// answer (a theme switch that re-renders a whole document, a click tmux
-    /// takes a moment over) is captured as the screen from *before* it, and the
-    /// change surfaces one scene late.
-    #[serde(default = "default_react")]
-    pub react_ms: u64,
     /// Grid snapshot interval.
     #[serde(default = "d_sample")]
     pub sample_ms: u64,
@@ -271,12 +261,6 @@ pub struct RecordConfig {
 fn default_startup() -> u64 {
     900
 }
-fn default_settle() -> u64 {
-    350
-}
-fn default_react() -> u64 {
-    500
-}
 fn default_type_cs() -> u16 {
     9
 }
@@ -311,7 +295,19 @@ fn d_max_mb() -> u64 {
 #[serde(untagged)]
 pub enum AwaitSpec {
     Text(String),
-    Scoped { find: String, row: Option<i32> },
+    Scoped(ScopedAwait),
+}
+
+/// The table form of `await`. A named struct rather than an inline variant
+/// because `deny_unknown_fields` is a container attribute — serde rejects it on
+/// a variant — and without it `await = { find = "x", typo = 1 }` would silently
+/// drop `typo`, which is against this config's fail-loudly posture.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopedAwait {
+    pub find: String,
+    #[serde(default)]
+    pub row: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -400,7 +396,7 @@ impl Scene {
         let (find, row) = match &self.await_spec {
             None => return Ok(None),
             Some(AwaitSpec::Text(t)) => (t.as_str(), None),
-            Some(AwaitSpec::Scoped { find, row }) => (find.as_str(), *row),
+            Some(AwaitSpec::Scoped(s)) => (s.find.as_str(), s.row),
         };
         if let Some(r) = row {
             let rows = rows as i32;
@@ -448,6 +444,18 @@ mod await_tests {
         let c = cfg("keys = ['t']\nawait = { find = 'theme: light', row = -1 }");
         let p = c.scenes[0].pattern(c.rows).unwrap().unwrap();
         assert_eq!(p.row(), Some(-1));
+    }
+
+    #[test]
+    fn await_table_rejects_an_unknown_key() {
+        let text = "launch = 'true'\ncols = 10\nrows = 4\n[[scene]]\nkeys = ['t']\n\
+                    await = { find = 'x', row = -1, await_ms = 8000 }\n";
+        let e: Result<RecordConfig, _> = toml::from_str(text);
+        let err = e.err().expect("a typo inside the await table must not be dropped");
+        assert!(
+            err.to_string().contains("await_ms"),
+            "error should name the offending key: {err}"
+        );
     }
 
     #[test]

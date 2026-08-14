@@ -1,24 +1,41 @@
 //! The `record` command: drive a command in an embedded terminal (its own PTY
 //! plus a `vt100` parser — no tmux) and turn a scene script into an animation.
-//! Each scene expands into many frames — one per key, one per typed character,
-//! one per mouse-cursor cell-step — so keyboard and mouse actions play out step
-//! by step. Cursor-only moves reuse the last capture; drags re-capture each step
-//! so live UI (e.g. a resize preview) is shown.
+//!
+//! Three phases, deliberately separated:
+//!
+//! 1. **Drive** — `Recorder` sends one input at a time, waits for its result,
+//!    and records a [`Mark`] on the timeline. It never renders anything.
+//! 2. **Capture** — a [`Sampler`] thread snapshots the screen continuously, so
+//!    nothing the app draws between inputs is missed and no capture is ever
+//!    blocked behind a rasterisation.
+//! 3. **Assemble, then render** — [`assemble`] turns the state log plus the
+//!    marks into frame specs, and only those surviving specs are rasterised.
+//!
+//! Each scene still expands into many frames — one per key, one per typed
+//! character, one per mouse-cursor cell-step — so keyboard and mouse actions
+//! play out step by step. Cursor-only moves reuse the last screen; drags
+//! re-capture each step so live UI (e.g. a resize preview) is shown.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use image::RgbaImage;
 
+// Aliased: `config::FrameSource` is a different type with the same name (the
+// `encode` path's file-or-card), so neither name is imported bare here.
+use crate::assemble::FrameSource as Source;
+use crate::assemble::{assemble, InputMark, Mark};
 use crate::chrome::Chrome;
-use crate::config::{min_hold_cs, Action, Card, RecordConfig, Scene};
+use crate::config::{min_hold_cs, Action, RecordConfig, Scene};
 use crate::cursor;
 use crate::encode::{encode_webp, total_ms, Frame};
 use crate::frame;
 use crate::grid::Cell;
 use crate::mouse::{Button, Scroll};
+use crate::pattern::Pattern;
 use crate::raster::Renderer;
+use crate::sampler::{Sampler, WaitOutcome};
 use crate::term::Term;
 
 /// Cells along the straight line from `a` to `b`, one per step, excluding `a` and
@@ -36,172 +53,189 @@ fn line_cells(a: (u32, u32), b: (u32, u32)) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Drives the embedded terminal and accumulates frames.
+/// Drives the embedded terminal and accumulates timeline marks. Rendering is
+/// not its job — see [`run`].
 struct Recorder<'a> {
     cfg: &'a RecordConfig,
-    renderer: Renderer,
-    chrome: Chrome,
-    idle: Duration,
-    react: Duration,
-    cap: Duration,
-    startup: Duration,
-    min_cs: u16,
-    last_grid: Vec<Vec<Cell>>,
-    last_mouse: Option<(u32, u32)>,
-    caret: Option<(u32, u32)>,
-    frames: Vec<Frame>,
+    /// Declared before `term` so the sampler thread is joined before the child
+    /// is killed and the parser goes away.
+    sampler: Sampler,
     term: Term,
+    marks: Vec<Mark>,
+    /// One compiled `await` per scene, compiled at startup so a bad pattern
+    /// fails in milliseconds rather than minutes into a recording.
+    patterns: Vec<Option<Pattern>>,
+    /// Where the pointer was left standing, so the next `move_to` knows where
+    /// to animate *from*. Not the same thing as "does this frame draw a
+    /// pointer" — that is decided per input by the caller of `capture`.
+    last_mouse: Option<(u32, u32)>,
+    min_cs: u16,
 }
 
 impl<'a> Recorder<'a> {
     fn spawn(cfg: &'a RecordConfig) -> Result<Recorder<'a>> {
+        let patterns = cfg
+            .scenes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.pattern(cfg.rows).with_context(|| format!("scene {i} await")))
+            .collect::<Result<Vec<_>>>()?;
         let term = Term::spawn(cfg.cols as u16, cfg.rows as u16, &cfg.launch, &cfg.env)
             .context("start embedded terminal")?;
-        let idle = Duration::from_millis(cfg.settle_ms);
-        let react = Duration::from_millis(cfg.react_ms);
-        // `cap` is the absolute ceiling on one settle, so it has to leave room
-        // for the whole react-then-idle wait or it would silently reinstate the
-        // early capture it exists to prevent.
-        let cap = idle
-            .saturating_mul(8)
-            .max(Duration::from_millis(1500))
-            .max(react + idle.saturating_mul(2));
-        let renderer = Renderer::new(cfg.font_px);
-        let cell_h = renderer.cell_size().1;
-        let chrome = match &cfg.chrome {
-            Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
-            None => Chrome::disabled(),
-        };
+        let sampler = Sampler::start(
+            term.handle(),
+            Duration::from_millis(cfg.sample_ms),
+            Duration::from_millis(cfg.persist_ms),
+            (cfg.max_capture_mb as usize).saturating_mul(1024 * 1024),
+        );
         Ok(Recorder {
-            renderer,
-            chrome,
-            idle,
-            react,
-            cap,
-            startup: Duration::from_millis(cfg.startup_ms),
-            min_cs: min_hold_cs(cfg.max_fps),
-            last_grid: vec![Vec::new()],
-            last_mouse: None,
-            caret: None,
-            frames: Vec::new(),
             cfg,
+            sampler,
             term,
+            marks: Vec::new(),
+            patterns,
+            last_mouse: None,
+            min_cs: min_hold_cs(cfg.max_fps),
         })
     }
 
-    /// Wait for the first paint to settle, then seed the current grid.
+    /// Wait for the first paint before anything is captured.
     ///
-    /// `startup_ms` is a floor, not just a cap: we wait it out so a slow first
-    /// paint — e.g. an interactive shell's initial prompt — is fully drawn before
-    /// we capture. A short `settle_ms` must NOT cut this short: `settle` returns
-    /// the moment the PTY is quiet for `settle_ms`, which for a small `settle_ms`
-    /// happens during the brief quiet *before* the prompt is printed. That would
-    /// seed a blank screen, and the first keystrokes would land ahead of the
-    /// prompt (`pri` then `bash-5.2$` → `pribash-5.2$`). After the floor, let any
-    /// remaining output settle normally.
-    fn seed(&mut self) {
-        self.term.settle(Duration::ZERO, self.startup, self.startup);
-        self.term.settle(self.react, self.idle, self.cap);
-        self.last_grid = self.term.grid();
-        self.caret = self.term.caret();
-    }
-
-    /// Let the screen settle after an input, then re-read the grid and caret.
-    fn capture(&mut self) {
-        self.term.settle(self.react, self.idle, self.cap);
-        self.last_grid = self.term.grid();
-        self.caret = self.term.caret();
-    }
-
-    /// Render the current grid and push a frame. A frame with a mouse position
-    /// draws the pointer; otherwise (keyboard/typing frames) it draws the app's
-    /// text caret if the cursor is visible.
-    fn push(&mut self, mouse: Option<(u32, u32)>, hold_cs: u16) {
-        let mut img: RgbaImage =
-            self.renderer
-                .render(&self.last_grid, self.cfg.cols, self.cfg.rows);
-        if self.cfg.cursor {
-            if let Some((x, y)) = mouse {
-                let (px, py) = self.renderer.cell_origin(x, y);
-                cursor::stamp(&mut img, px, py);
-            } else if let Some((cx, cy)) = self.caret {
-                let cell = self
-                    .last_grid
-                    .get(cy as usize)
-                    .and_then(|r| r.get(cx as usize))
-                    .copied()
-                    .unwrap_or(Cell {
-                        ch: ' ',
-                        fg: (0, 0, 0),
-                        bg: (255, 255, 255),
-                        bold: false,
-                    });
-                self.renderer
-                    .draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
-            }
-        }
-        let image = if self.chrome.is_active() {
-            self.chrome.matte(&self.renderer, &img)
-        } else {
-            img
-        };
-        self.frames.push(Frame {
-            image,
-            hold_cs: hold_cs.max(self.min_cs),
-        });
-    }
-
-    /// Push a synthetic card frame (does not disturb the captured terminal state).
-    fn push_card(&mut self, card: &Card, hold_cs: u16) -> Result<()> {
-        let img = frame::render_card(
-            &self.renderer,
-            self.cfg.cols,
-            self.cfg.rows,
-            card,
-            self.cfg.card_font_px,
-            self.cfg.card_subtitle_px,
-        )?;
-        let image = if self.chrome.is_active() {
-            self.chrome.matte(&self.renderer, &img)
-        } else {
-            img
-        };
-        self.frames.push(Frame {
-            image,
-            hold_cs: hold_cs.max(self.min_cs),
-        });
+    /// `startup_ms` is a **floor**, not just a cap. A short stability window
+    /// would otherwise be satisfied during the brief quiet *before* the first
+    /// paint — an interactive shell has not printed its prompt yet — and that
+    /// would seed a blank screen, with the first keystrokes landing ahead of
+    /// the prompt (`pri` then `bash-5.2$` → `pribash-5.2$`). So we wait the
+    /// floor out unconditionally, and only then run an ordinary stability wait
+    /// to let whatever is still arriving settle.
+    fn seed(&mut self) -> Result<()> {
+        std::thread::sleep(Duration::from_millis(self.cfg.startup_ms));
+        self.sampler
+            .wait(
+                None,
+                Duration::from_millis(self.cfg.change_ms),
+                Duration::from_millis(self.cfg.stable_ms),
+                Duration::from_millis(self.cfg.wait_cap_ms),
+            )
+            .context("waiting for the first paint to settle")?;
         Ok(())
     }
 
-    /// Animate the pointer moving from its last position to `target` over the
-    /// current (unchanged) screen — one frame per cell. Leaves `last_mouse` set.
-    fn move_to(&mut self, target: (u32, u32), move_cs: u16) {
+    /// Wait for this input's result, then mark it on the timeline.
+    ///
+    /// `at` is when the input was sent; it bounds which sampled states belong
+    /// to this input. `want` is the scene's `await` pattern, and is passed only
+    /// for a scene's *final* input — an intermediate keystroke has no reason to
+    /// produce the scene's finished screen. `mouse` is the pointer position
+    /// this input's frames draw, or `None` for keyboard frames (which draw the
+    /// app's text caret instead).
+    fn capture(
+        &mut self,
+        scene: usize,
+        at: Instant,
+        authored_cs: u16,
+        mouse: Option<(u32, u32)>,
+        want: bool,
+    ) -> Result<()> {
+        let animated = self.cfg.realtime || self.cfg.scenes[scene].animated;
+        let out = if animated {
+            // A screen that never holds still has no "settled" moment to wait
+            // for. Dwell for the authored time and take whatever is on screen.
+            std::thread::sleep(Duration::from_millis(authored_cs as u64 * 10));
+            let mut a = self.sampler.states();
+            let now = Instant::now();
+            // Either there was a pending state to promote, or the sampler
+            // thread already promoted it. `Sampler::start` commits one state
+            // before any of this can run, so "neither" is a broken invariant
+            // rather than a reachable case — say so instead of indexing 0 into
+            // an empty log.
+            let state = match a.force_commit(now) {
+                Some(idx) => idx,
+                None => a.committed().len().checked_sub(1).expect(
+                    "Sampler::start observes one state before any capture can run; \
+                     committed() must not be empty here",
+                ),
+            };
+            WaitOutcome { state, hit_cap: false }
+        } else {
+            let want = if want {
+                self.patterns[scene].as_ref()
+            } else {
+                None
+            };
+            let timeout = match want {
+                Some(_) => Duration::from_millis(
+                    self.cfg.scenes[scene].await_ms.unwrap_or(self.cfg.await_ms),
+                ),
+                None => Duration::from_millis(self.cfg.wait_cap_ms),
+            };
+            self.sampler
+                .wait(
+                    want,
+                    Duration::from_millis(self.cfg.change_ms),
+                    Duration::from_millis(self.cfg.stable_ms),
+                    timeout,
+                )
+                .with_context(|| format!("scene {scene}"))?
+        };
+        self.marks.push(Mark::Input(InputMark {
+            t: at,
+            scene,
+            settled: out.state,
+            authored_cs,
+            mouse,
+            animated,
+        }));
+        Ok(())
+    }
+
+    /// Mark a synthetic card. Nothing is sent and nothing is waited for — a
+    /// card does not touch the terminal.
+    fn push_card(&mut self, scene: usize, hold_cs: u16) {
+        self.marks.push(Mark::Card { scene, hold_cs });
+    }
+
+    /// Animate the pointer from its last position to `target` over the current
+    /// (unchanged) screen — one frame per cell. Nothing is sent to the app and
+    /// nothing is waited for. Leaves `last_mouse` set.
+    fn move_to(&mut self, scene: usize, target: (u32, u32), move_cs: u16) {
         if let Some(from) = self.last_mouse {
-            for cell in line_cells(from, target) {
-                self.push(Some(cell), move_cs);
+            for mouse in line_cells(from, target) {
+                self.marks.push(Mark::MouseMove { scene, mouse, hold_cs: move_cs });
             }
         }
         self.last_mouse = Some(target);
     }
 
-    fn process(&mut self, scene: &Scene) -> Result<()> {
-        let type_cs = scene.type_cs.unwrap_or(self.cfg.type_cs);
-        let move_cs = scene.move_cs.unwrap_or(self.cfg.move_cs);
+    fn process(&mut self, i: usize) -> Result<()> {
+        // Copy the `&'a` reference out so the scene borrow does not conflict
+        // with the `&mut self` calls below.
+        let cfg = self.cfg;
+        let scene = &cfg.scenes[i];
+        let type_cs = scene.type_cs.unwrap_or(cfg.type_cs);
+        let move_cs = scene.move_cs.unwrap_or(cfg.move_cs);
         let hold_cs = scene.hold_cs;
         match scene.action()? {
-            Action::Card(card) => self.push_card(card, hold_cs)?,
+            Action::Card(_) => self.push_card(i, hold_cs),
 
             Action::Keys(keys) => {
                 if keys.is_empty() {
-                    // "Hold the current screen" — capture once.
-                    self.capture();
-                    self.push(None, hold_cs);
+                    // "Hold the current screen" — nothing is sent, but the
+                    // scene still owes one wait and one frame.
+                    let at = Instant::now();
+                    self.capture(i, at, hold_cs, None, true)?;
                 } else {
                     let last = keys.len() - 1;
-                    for (i, k) in keys.iter().enumerate() {
+                    for (n, k) in keys.iter().enumerate() {
+                        let at = Instant::now();
                         self.term.send_key(k)?;
-                        self.capture();
-                        self.push(None, if i == last { hold_cs } else { type_cs });
+                        self.capture(
+                            i,
+                            at,
+                            if n == last { hold_cs } else { type_cs },
+                            None,
+                            n == last,
+                        )?;
                     }
                 }
             }
@@ -209,53 +243,67 @@ impl<'a> Recorder<'a> {
             Action::Text(s) => {
                 let chars: Vec<char> = s.chars().collect();
                 let last = chars.len().saturating_sub(1);
-                for (i, c) in chars.iter().enumerate() {
+                for (n, c) in chars.iter().enumerate() {
+                    let at = Instant::now();
                     self.term.send_bytes(c.to_string().as_bytes())?;
-                    self.capture();
-                    self.push(None, if i == last { hold_cs } else { type_cs });
+                    self.capture(
+                        i,
+                        at,
+                        if n == last { hold_cs } else { type_cs },
+                        None,
+                        n == last,
+                    )?;
                 }
             }
 
             Action::Click(c) => {
-                let at = (c.x, c.y);
+                let at_cell = (c.x, c.y);
                 let b = c.button;
-                self.move_to(at, move_cs);
-                self.term.send_bytes(sgr(b, at, true).as_bytes())?; // press
-                self.capture();
-                self.push(Some(at), move_cs);
-                self.term.send_bytes(sgr(b, at, false).as_bytes())?; // release
-                self.capture();
-                self.push(Some(at), hold_cs);
+                self.move_to(i, at_cell, move_cs);
+                let t = Instant::now();
+                self.term.send_bytes(sgr(b, at_cell, true).as_bytes())?; // press
+                self.capture(i, t, move_cs, Some(at_cell), false)?;
+                // The release is the last thing the app sees, so it carries the
+                // scene's `await`.
+                let t = Instant::now();
+                self.term.send_bytes(sgr(b, at_cell, false).as_bytes())?; // release
+                self.capture(i, t, hold_cs, Some(at_cell), true)?;
             }
 
             Action::Drag(d) => {
                 let from = (d.from[0], d.from[1]);
                 let to = (d.to[0], d.to[1]);
                 let b = d.button;
-                self.move_to(from, move_cs);
+                self.move_to(i, from, move_cs);
+                let t = Instant::now();
                 self.term.send_bytes(sgr(b, from, true).as_bytes())?; // press
-                self.capture();
-                self.push(Some(from), move_cs);
+                self.capture(i, t, move_cs, Some(from), false)?;
                 for cell in line_cells(from, to) {
+                    let t = Instant::now();
                     self.term.send_bytes(sgr_motion(b, cell).as_bytes())?; // drag
-                    self.capture();
-                    self.push(Some(cell), move_cs);
+                    self.capture(i, t, move_cs, Some(cell), false)?;
                 }
+                let t = Instant::now();
                 self.term.send_bytes(sgr(b, to, false).as_bytes())?; // release
-                self.capture();
-                self.push(Some(to), hold_cs);
+                self.capture(i, t, hold_cs, Some(to), true)?;
                 self.last_mouse = Some(to);
             }
 
             Action::Scroll(s) => {
-                let at = (s.x, s.y);
-                self.move_to(at, move_cs);
+                let at_cell = (s.x, s.y);
+                self.move_to(i, at_cell, move_cs);
                 let seqs = scroll_sequences(s);
                 let last = seqs.len().saturating_sub(1);
-                for (i, seq) in seqs.iter().enumerate() {
+                for (n, seq) in seqs.iter().enumerate() {
+                    let t = Instant::now();
                     self.term.send_bytes(seq.as_bytes())?;
-                    self.capture();
-                    self.push(Some(at), if i == last { hold_cs } else { move_cs });
+                    self.capture(
+                        i,
+                        t,
+                        if n == last { hold_cs } else { move_cs },
+                        Some(at_cell),
+                        n == last,
+                    )?;
                 }
             }
         }
@@ -286,6 +334,20 @@ fn scroll_sequences(s: &Scroll) -> Vec<String> {
     s.sequences()
 }
 
+/// `scene 03 (keys)` — enough to find the scene in the config by eye.
+fn scene_label(i: usize, s: &Scene) -> String {
+    let kind = match s.action() {
+        Ok(Action::Keys(_)) => "keys",
+        Ok(Action::Text(_)) => "text",
+        Ok(Action::Click(_)) => "click",
+        Ok(Action::Drag(_)) => "drag",
+        Ok(Action::Scroll(_)) => "scroll",
+        Ok(Action::Card(_)) => "card",
+        Err(_) => "invalid",
+    };
+    format!("scene {i:02} ({kind})")
+}
+
 pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Path>) -> Result<()> {
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
@@ -296,27 +358,126 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let base = config_path.parent().unwrap_or(Path::new("."));
     let out_path = resolve_out(out_override, cfg.out.as_deref(), base, config_path)?;
 
+    // --- drive ---------------------------------------------------------
     let mut rec = Recorder::spawn(&cfg)?;
-    rec.seed(); // settle the first paint, seed the grid
-    for (i, scene) in cfg.scenes.iter().enumerate() {
-        rec.process(scene)?;
-        eprintln!("  scene {i:02} → {} frames total", rec.frames.len());
+    rec.seed()?;
+    for i in 0..cfg.scenes.len() {
+        rec.process(i)?;
+        eprintln!("  scene {i:02} → {} marks total", rec.marks.len());
+        // A child that exits once the script is finished is a legitimate end.
+        // One that exits with scenes still to play is not: everything after
+        // this point would be recorded against a dead terminal.
+        if rec.term.handle().is_eof() && i + 1 < cfg.scenes.len() {
+            let remaining: Vec<String> = cfg.scenes[i + 1..]
+                .iter()
+                .enumerate()
+                .map(|(n, s)| scene_label(i + 1 + n, s))
+                .collect();
+            bail!(
+                "the launched command exited after {}, with {} scene(s) left to play: {}\n\
+                 keep the command alive for the whole script (e.g. append `; sleep 5`), \
+                 or drop the scenes it cannot answer",
+                scene_label(i, &cfg.scenes[i]),
+                remaining.len(),
+                remaining.join(", "),
+            );
+        }
     }
+    let end = Instant::now();
+
+    // Quit the app now, while the sampler is still free to run: states it
+    // records after `end` fall outside every input's window and are ignored.
+    for k in &cfg.quit_keys {
+        let _ = rec.term.send_key(k);
+    }
+
+    // --- assemble ------------------------------------------------------
+    // The guard is held across rendering: the sampler thread simply blocks on
+    // it, and the state log must not move under us while we index into it.
+    let acc = rec.sampler.states();
+    let state_times: Vec<Instant> = acc.committed().iter().map(|s| s.t).collect();
+    let specs = assemble(&state_times, end, &rec.marks, rec.min_cs);
+
+    // --- render --------------------------------------------------------
+    let renderer = Renderer::new(cfg.font_px);
+    let cell_h = renderer.cell_size().1;
+    let chrome = match &cfg.chrome {
+        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+        None => Chrome::disabled(),
+    };
+    let mut frames: Vec<Frame> = Vec::with_capacity(specs.len());
+    // The last *clean* screen render, with no pointer or caret drawn on it.
+    // `Reuse` must start from that, not from the composited frame, or pointers
+    // would smear across a cursor-only move. Cards do not replace it, so a
+    // pointer move after a card still reuses the terminal screen.
+    let mut last_screen: Option<RgbaImage> = None;
+    for spec in &specs {
+        let mut img = match &spec.source {
+            Source::State(i) => {
+                let img = renderer.render(&acc.committed()[*i].grid, cfg.cols, cfg.rows);
+                last_screen = Some(img.clone());
+                img
+            }
+            Source::Card(s) => frame::render_card(
+                &renderer,
+                cfg.cols,
+                cfg.rows,
+                cfg.scenes[*s]
+                    .card
+                    .as_ref()
+                    .expect("a card mark is only pushed for a scene with a card"),
+                cfg.card_font_px,
+                cfg.card_subtitle_px,
+            )?,
+            Source::Reuse => last_screen
+                .clone()
+                .expect("a pointer-only move always follows a rendered screen"),
+        };
+
+        // A frame with a pointer position draws the pointer; otherwise
+        // (keyboard/typing frames) it draws the app's text caret, if visible.
+        if cfg.cursor {
+            if let Some((x, y)) = spec.mouse {
+                let (px, py) = renderer.cell_origin(x, y);
+                cursor::stamp(&mut img, px, py);
+            } else if let Source::State(i) = &spec.source {
+                let state = &acc.committed()[*i];
+                if let Some((cx, cy)) = state.caret {
+                    let cell = state
+                        .grid
+                        .get(cy as usize)
+                        .and_then(|r| r.get(cx as usize))
+                        .copied()
+                        .unwrap_or(Cell {
+                            ch: ' ',
+                            fg: (0, 0, 0),
+                            bg: (255, 255, 255),
+                            bold: false,
+                        });
+                    renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
+                }
+            }
+        }
+
+        frames.push(Frame {
+            image: if chrome.is_active() {
+                chrome.matte(&renderer, &img)
+            } else {
+                img
+            },
+            hold_cs: spec.hold_cs,
+        });
+    }
+    drop(acc);
+    drop(rec);
 
     // Optional per-frame PNG dump for inspection.
     if let Some(d) = dump_png {
         std::fs::create_dir_all(d).ok();
-        for (i, f) in rec.frames.iter().enumerate() {
+        for (i, f) in frames.iter().enumerate() {
             let _ = f.image.save(d.join(format!("frame{i:04}.png")));
         }
     }
-
-    // Quit the app, take the frames, then drop the terminal (reaps the child).
-    for k in &cfg.quit_keys {
-        let _ = rec.term.send_key(k);
-    }
-    let frames = std::mem::take(&mut rec.frames);
-    drop(rec);
 
     if frames.is_empty() {
         bail!("no frames captured");

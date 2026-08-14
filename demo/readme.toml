@@ -9,12 +9,14 @@ font_px = 18
 card_font_px = 40
 out     = "../docs/demo/ansidrama.webp"
 env     = { COLORTERM = "truecolor" }
-# The middle beat runs a REAL `ansidrama record hello.toml` as a child process.
-# `capture()` gives up once the PTY has been quiet for settle_ms — so settle_ms
-# must comfortably exceed the LONGEST silent gap in that child's own output
-# (mostly its own typing scene: chars * hello.toml's settle_ms), not just its
-# total run time, or the "OK:" line gets captured before it's actually printed.
-settle_ms = 3500
+# Pacing is per-scene now, not one global window: each input waits only until
+# the screen has actually moved and then held still (change_ms + stable_ms),
+# bounded by wait_cap_ms — so the ordinary beats below cost milliseconds, not
+# seconds. The middle beat is the exception: it runs a REAL
+# `ansidrama record hello.toml` as a child process, which takes a few seconds
+# (longer on a loaded machine) and is silent for stretches of that while it
+# renders. No timing rule can tell that silence from "finished", so that scene
+# declares what finishing LOOKS like with `await` instead of guessing.
 quit_keys = ["C-d"]
 
 # Frame the whole trailer as a macOS terminal window, with padding.
@@ -40,8 +42,17 @@ hold_cs = 250
 text    = "ansidrama record hello.toml"
 hold_cs = 40
 [[scene]]
-keys    = ["Enter"]
-hold_cs = 450
+keys     = ["Enter"]
+# Say what "done" looks like rather than waiting out a guess: this scene ends
+# when the child's own "OK: wrote" line is on screen, and fails loudly if it
+# never appears. The pattern is a regex, but needs no escaping as written, and
+# is deliberately NOT row-scoped: the shell scrolls, so that line has no fixed
+# row. With `await` set the bound is await_ms, not wait_cap_ms — measured at
+# ~5s on an idle machine, so this leaves an order of magnitude of headroom for
+# a loaded one. Too tight a bound would turn a working demo into a hard abort.
+await    = "OK: wrote"
+await_ms = 60000
+hold_cs  = 450
 
 # Show the file it made.
 [[scene]]
