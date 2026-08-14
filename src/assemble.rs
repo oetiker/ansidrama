@@ -52,7 +52,10 @@ pub enum Mark {
 }
 
 fn cs(d: Duration, min_cs: u16) -> u16 {
-    let raw = (d.as_millis() / 10) as u16;
+    // Saturate rather than truncate: a `u16` of centiseconds runs out at ~655
+    // seconds, and a plain `as` would turn an 11-minute measured hold into a
+    // short one. Reachable under `realtime` over a very long still stretch.
+    let raw = (d.as_millis() / 10).min(u16::MAX as u128) as u16;
     raw.max(1).max(min_cs)
 }
 
@@ -96,6 +99,12 @@ pub fn assemble(
                 scene: *scene,
                 input: None,
             }),
+            // `AppDriven` here is the one place the kind does not imply a
+            // measured duration: a pointer step sends nothing and reuses the
+            // screen, so it holds the authored `move_cs`. Adding a fourth
+            // kind would change the manifest, which is an out-of-repo
+            // contract — the exception is documented in README's manifest
+            // section instead.
             Mark::MouseMove { scene, mouse, hold_cs } => out.push(FrameSpec {
                 source: FrameSource::Reuse,
                 kind: FrameKind::AppDriven,
@@ -115,11 +124,15 @@ pub fn assemble(
                 let this_ord = *ord;
                 *ord += 1;
 
-                let settled_in_window = state_times
-                    .get(i.settled)
-                    .is_some_and(|t| *t >= i.t && *t < upto);
-                let any_state_in_window =
-                    state_times.iter().any(|t| *t >= i.t && *t < upto);
+                // Which states this input owns. Written once and used by all
+                // three readers below: the no-double-emit guarantee is
+                // structural only because they agree, and three copies of the
+                // predicate (one of them inverted) is one drift away from a
+                // frame emitted twice or lost.
+                let owns = |t: &Instant| *t >= i.t && *t < upto;
+
+                let settled_in_window = state_times.get(i.settled).is_some_and(owns);
+                let any_state_in_window = state_times.iter().any(owns);
 
                 // Override 1: an input that changed nothing on screen has its
                 // settled state predate it, so the state-scan below never
@@ -158,7 +171,7 @@ pub fn assemble(
                 }
 
                 for (idx, t) in state_times.iter().enumerate() {
-                    if *t < i.t || *t >= upto {
+                    if !owns(t) {
                         continue;
                     }
                     // Only true when settled_in_window, so this never
