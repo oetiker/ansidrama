@@ -2,11 +2,13 @@
 
 ## Session handover rule
 
-**When your context window is more than ~25% filled, stop and hand over:**
-write the current state to `docs/HANDOVER.md` (what's done, what's in flight,
-the active branch, the next concrete step, and any pending decisions), then
-stop so a fresh session can resume from that file. Read `docs/HANDOVER.md`
-first at the start of a session if it exists.
+At ~25% context, roll over to a fresh session using the `controller-handoff`
+skill, which writes and commits `docs/controller-handoff.md`. At session
+start, run `git worktree list` first, then read the handoff belonging to the
+workstream you are resuming.
+
+(This replaces an earlier `docs/HANDOVER.md` rule, which the global
+instructions supersede.)
 
 ## Before starting work
 

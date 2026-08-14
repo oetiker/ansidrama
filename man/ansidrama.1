@@ -72,26 +72,107 @@ snapshot, relative to the config) or
 Top level:
 .BR launch " (the shell command line), "
 .BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
-.BR max_fps ", " out ", " env ", " startup_ms ", " settle_ms ", " react_ms ", "
+.BR max_fps ", " out ", " env ", " startup_ms ", "
+.BR sample_ms ", " change_ms ", " stable_ms ", " persist_ms ", "
+.BR wait_cap_ms ", " await_ms ", " realtime ", " max_capture_mb ", "
 .BR type_cs ", " move_cs ", " quit_keys ", " cursor .
 Each
 .B [[scene]]
 performs exactly one action \(em
 .BR keys ", " text ", " click ", " drag ", " scroll ", or " card " \(em"
 plus timing
-.RB ( hold_cs ", " type_cs ", " move_cs ).
+.RB ( hold_cs ", " type_cs ", " move_cs ),
+and optionally
+.BR await ", " await_ms ", or " animated .
 A scene expands into many frames: one captured per key, per typed character,
 and per mouse cell\-step.
 .PP
-.B react_ms
-is how long the app is given to
-.I begin
-answering an input before a quiet terminal counts as "finished drawing".
-A quiet terminal means both "done" and "not started yet"; without this floor an
-input the app is slow to answer \(em a theme switch that re-renders a whole
-document, a click tmux takes a moment over \(em is captured as the screen from
-before it, and the change shows up one scene late. It is only spent in full by
+.B record
+samples the terminal grid continuously rather than guessing from a quiet
+terminal. The sampling keys, all in milliseconds and defaulting to the
+spec's values:
+.TP
+.B sample_ms " (10)"
+Grid snapshot interval.
+.TP
+.B change_ms " (150)"
+Grace given for the app's first reaction to an input; spent in full only by
 an input that draws nothing at all.
+.TP
+.B stable_ms " (40)"
+How long the grid must hold still before the recorder treats a screen as
+settled and moves on to the next input.
+.TP
+.B persist_ms " (40)"
+How long a state must persist before it earns a frame in the assembled
+movie, filtering out one-frame flicker between two real screens.
+.B stable_ms
+and
+.B persist_ms
+default to the same value but answer different questions \(em when to act,
+versus what to keep. Raise
+.B stable_ms
+for a scene that redraws in two visible stages; lower
+.B persist_ms
+for a scene with a fast animation.
+.TP
+.B wait_cap_ms " (3000)"
+Bound on a wait with no
+.BR await .
+.TP
+.B await_ms " (5000)"
+Default timeout for an
+.BR await ;
+overridable per scene.
+.TP
+.B realtime " (false)"
+Play the whole recording at measured time instead of pacing on stability.
+.TP
+.B max_capture_mb " (256)"
+Backstop on accumulated grid memory.
+.PP
+A scene's
+.B await
+declares what its finished screen looks like, replacing a timing guess with
+a fact: either
+.B await = "text"
+(whole\-screen match) or
+.B await = { find = "text", row = -1 }
+(row\-scoped; a negative row counts from the bottom). If the pattern never
+matches within
+.BR await_ms ,
+the run aborts, naming the pattern and showing the last screen \(em never a
+silently wrong frame.
+.B await
+is rejected at config load (not silently ignored) on a
+.B card
+scene, on a scene with
+.B animated = true ,
+or anywhere under top\-level
+.BR realtime " = true" ,
+since in each of those cases it could never be honoured.
+.B animated
+marks a screen that never holds still (spinner, clock, progress bar): instead
+of waiting for stability, the scene dwells for each input's own authored hold
+\(em
+.BR type_cs / move_cs
+for every input but the scene's last, and
+.B hold_cs
+only for that last one \(em and captures whatever the app drew during it. A
+multi\-key or
+.B text
+animated scene therefore dwells once per key, not once for
+.BR hold_cs .
+Top\-level
+.BR realtime " = true"
+does the same to every scene.
+.PP
+Migration:
+.B settle_ms
+and
+.B react_ms
+are gone; delete them. A config that still carries either now fails to
+parse.
 .SS "title cards"
 A
 .B card
@@ -135,7 +216,33 @@ ansidrama record record.toml \-\-dump\-png frames/
 .RE
 .SH FILES
 The output WebP (from
-.BR \-o " or the " out " config key). With " \-\-dump\-png ", one PNG per frame."
+.BR \-o " or the " out " config key)."
+With
+.BR \-\-dump\-png " " \fIdir\fR ,
+one
+.I frameNNNN.png
+per frame, plus
+.I manifest.tsv
+mapping each frame back to the scene and input that produced it.
+Columns:
+.BR frame ", "
+.BR scene ", "
+.B input
+(the input's ordinal within its scene, or
+.RB \(dq \- \(dq
+when none),
+.B kind
+(one of
+.BR input\-driven ", " app\-driven ", or " card ),
+and
+.BR hold_cs .
+An
+.B input\-driven
+frame is an input's settled result, held for the duration the script
+authored; an
+.B app\-driven
+frame is the app moving on its own after the input already settled, held
+for its own measured duration.
 .SH AUTHOR
 Tobias Oetiker <tobi@oetiker.ch>
 .SH LICENSE

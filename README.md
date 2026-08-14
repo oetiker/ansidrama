@@ -131,6 +131,122 @@ Exactly one action per scene. Coordinates are 1-based terminal columns/rows. Mou
 actions expand to SGR (1006) mouse reports under the hood, so you never write
 `\x1b[<0;10;11M` by hand — a raw escape in `keys` still works as an escape hatch.
 
+## Waiting for the app to finish drawing
+
+`record` doesn't fire an input, hold for a fixed time, and hope the screen is
+settled by then. It samples the terminal grid continuously and paces on
+**stability** — a screen that has stopped changing — with the sampling
+governed by a few global keys (all milliseconds):
+
+```toml
+sample_ms      = 10    # grid snapshot interval
+change_ms      = 150   # grace for the app's first reaction to an input
+stable_ms      = 40    # how long the grid must hold still before we act on it
+persist_ms     = 40    # how long a state must persist to earn a frame
+wait_cap_ms    = 3000  # bound on a wait that has no `await`
+await_ms       = 5000  # default timeout for an `await`
+realtime       = false # play the whole recording at measured time
+max_capture_mb = 256   # backstop on accumulated grid memory
+```
+
+(`startup_ms = 900` — the floor before the very first capture — predates this
+list and is unchanged.)
+
+`stable_ms` and `persist_ms` default to the same value but answer two
+different questions. `stable_ms` decides **when to send the next input**: the
+grid has to hold still that long before the recorder treats the screen as
+settled and moves on. `persist_ms` decides **what earns a frame in the
+movie**: a state has to persist that long before it is written out, so a
+one-frame flicker between two real screens doesn't get its own frame. A scene
+that redraws in two visible stages wants a higher `stable_ms`, so the
+recorder doesn't act on the first, half-finished stage; a scene with a fast
+animation wants a lower `persist_ms`, so quick-but-real states aren't
+filtered out as noise.
+
+`await` is the point of the feature. Timing alone can't distinguish "the app
+finished" from "the app hasn't started yet" — both look like a quiet
+terminal. Declaring the finished screen replaces that guess with a fact: the
+recorder waits until the declared text appears, and if it never does, the
+run **aborts** naming the pattern and showing the last screen, instead of
+silently capturing whatever was on screen when the clock ran out.
+
+```toml
+[[scene]]
+keys  = ["Enter"]
+await = "theme: light"                       # whole-screen match
+hold_cs = 100
+
+[[scene]]
+keys  = ["Enter"]
+await = { find = "Saved", row = -1 }         # row-scoped; negative counts from the bottom
+await_ms = 8000                              # per-scene override of the default timeout
+hold_cs = 100
+
+[[scene]]
+keys    = ["Tab"]
+animated = true                              # a spinner/clock/progress bar that never holds still
+hold_cs = 200
+```
+
+Pick `await` text that **only the finished screen contains**. The recorder
+gives the app `change_ms` to react before a match is allowed to end the wait,
+which rules out an instant stale match — but once that grace expires, a
+pattern that was already on screen *before* the input satisfies the wait just
+the same. Nothing about timing can tell "the app's answer" from "text that
+happened to be there already"; only the choice of pattern can.
+
+`animated = true` turns the wait off for that scene: there is no settled
+moment to wait for, so the recorder **dwells** instead — for each input's own
+authored hold, which is `type_cs`/`move_cs` for every input but the scene's
+last and `hold_cs` only for that last one — and takes whatever the app drew
+during it. A multi-key or `text` animated scene therefore dwells once per
+key, not once for `hold_cs`. Global `realtime = true` does the same to every
+scene.
+
+`await` can't be combined with everything: it is rejected at config load (not
+silently ignored) on a `card` scene, on a scene with `animated = true`, or
+anywhere under a top-level `realtime = true` — in each case the recorder
+would never actually wait, so the `await` could never be honoured.
+
+**Migration from pre-0.3:** `settle_ms` and `react_ms` are gone; delete them.
+A config that still carries them now fails to parse.
+
+## Frame manifest
+
+`--dump-png dir` writes each rendered frame as `dir/frameNNNN.png`, plus a
+`dir/manifest.tsv` that maps each frame back to the scene and input that
+produced it. `record` no longer prints a running `scene N -> M frames total`
+tally you could do arithmetic on — an app-driven frame makes a scene's frame
+count unpredictable — so the manifest is what replaces that arithmetic with a
+lookup.
+
+```
+frame	scene	input	kind	hold_cs
+0000	0	-	card	150
+0001	1	0	input-driven	9
+0002	1	1	input-driven	9
+```
+
+Columns: `frame` is the frame index (matches the `NNNN` in the PNG filename);
+`scene` is the scene index that produced it; `input` is the ordinal of the
+input within that scene, set only on `input-driven` frames (`-` for `card`
+and `app-driven` frames); `kind` classifies the frame (below); `hold_cs` is
+the duration it holds in the assembled WebP.
+
+A frame's `kind` is one of three things: **`input-driven`** is an input's
+settled result and holds for the duration the script authored (`type_cs`,
+`move_cs`, or `hold_cs`); **`app-driven`** is the app moving on its own after
+the input has already settled, and holds for its own real measured duration;
+**`card`** is a synthetic title card.
+
+One exception to that reading: a **pointer-move** frame — a cell-step of the
+animated cursor between two positions, which reuses the screen underneath and
+sends nothing to the app — is also written as `app-driven`, but holds for the
+authored `move_cs` rather than a measured duration. Its `scene` column is
+correct, so a bisect still lands on the right scene; only don't read
+"`app-driven`" as "measured" on a row whose scene is a `click`, `drag` or
+`scroll`.
+
 ## Title cards
 
 Silent-movie intertitles: a solid panel with centered text inside a double-line

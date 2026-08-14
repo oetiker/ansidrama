@@ -8,7 +8,6 @@ rows    = 10
 font_px = 18
 out     = "hello.webp"
 env     = { COLORTERM = "truecolor" }
-settle_ms = 40    # let each keystroke settle before capture (kept < readme.toml's settle_ms)
 startup_ms = 1500 # floor: wait for bash's first prompt before typing (avoids a prompt race)
 quit_keys = ["C-d"]
 

@@ -14,6 +14,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
+pub mod assemble;
 pub mod chrome;
 pub mod color;
 pub mod config;
@@ -24,9 +25,12 @@ pub mod grid;
 #[cfg(unix)]
 pub mod keys;
 pub mod mouse;
+pub mod pattern;
 pub mod raster;
 #[cfg(unix)]
 pub mod record;
+#[cfg(unix)]
+pub mod sampler;
 #[cfg(unix)]
 pub mod term;
 

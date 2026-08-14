@@ -9,7 +9,7 @@
 use crate::color::Rgb;
 
 /// One rendered screen cell: a character with its resolved RGB colours.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Cell {
     pub ch: char,
     pub fg: Rgb,
