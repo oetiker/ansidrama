@@ -222,11 +222,26 @@ impl Sampler {
         self.acc.0.lock().unwrap()
     }
 
-    pub fn stop(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+    /// The sampler thread gave up because the accumulated grid memory passed
+    /// `max_capture_mb`. Every caller that reads the state log without going
+    /// through [`Sampler::wait`] — the animated/`realtime` dwell in `record` —
+    /// must check this, or the log silently stops growing and every later
+    /// frame renders the last state that made it in.
+    pub fn over_budget(&self) -> bool {
+        self.over_budget.load(Ordering::Relaxed)
+    }
+
+    /// The one error for a tripped memory backstop. Two call sites raise it —
+    /// `wait` and the animated dwell — and they must not drift apart, so the
+    /// message lives here rather than at either of them.
+    pub fn budget_error(&self, states: usize) -> anyhow::Error {
+        anyhow::anyhow!(
+            "recording exceeded max_capture_mb = {} after {} ({} states)\n\
+             raise max_capture_mb, or raise persist_ms to commit fewer states",
+            self.max_bytes / (1024 * 1024),
+            format_elapsed(self.start.elapsed()),
+            states,
+        )
     }
 
     /// Two phases: up to `change` for the screen to move at all, then until the
@@ -249,10 +264,14 @@ impl Sampler {
     ///
     /// Phase 1 is paid even when `want` is set — deliberately. A pattern that
     /// already matches a screen from *before* this call (one the app has not
-    /// yet reacted onto) must not end the wait instantly: that is a stale
-    /// match, the same shape of bug as capturing a screen the app never
-    /// drew. Skipping the grace whenever `want` matches would reintroduce it.
-    /// The bounded `change` cost is the price of ruling that out.
+    /// yet reacted onto) must not end the wait *instantly*: that is a stale
+    /// match, the same shape of bug as capturing a screen the app never drew.
+    /// Note what this does and does not buy. `phase1 = moved ||
+    /// grace_left.is_zero()`, so an already-true pattern still satisfies the
+    /// wait once the grace expires, on a screen the app never reacted onto:
+    /// the grace **narrows** the stale-match window to `change`, it does not
+    /// close it. Closing it is not something timing can do — the answer is to
+    /// pick `await` text that only the finished screen contains.
     pub fn wait(
         &self,
         want: Option<&Pattern>,
@@ -265,18 +284,11 @@ impl Sampler {
         let mut a = lock.lock().unwrap();
         let base_change = a.last_change();
         loop {
-            if self.over_budget.load(Ordering::Relaxed) {
+            if self.over_budget() {
                 let states = a.committed().len();
                 drop(a);
                 trace("budget", start.elapsed(), false, want, states);
-                let elapsed = self.start.elapsed();
-                bail!(
-                    "recording exceeded max_capture_mb = {} after {} ({} states)\n\
-                     raise max_capture_mb, or raise persist_ms to commit fewer states",
-                    self.max_bytes / (1024 * 1024),
-                    format_elapsed(elapsed),
-                    states,
-                );
+                return Err(self.budget_error(states));
             }
             let now = Instant::now();
             let elapsed = now.duration_since(start);

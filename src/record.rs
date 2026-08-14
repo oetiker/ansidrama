@@ -163,6 +163,14 @@ impl<'a> Recorder<'a> {
             // mutex must not be held across it, or the sampler thread stalls.
             drop(a);
             crate::sampler::trace("dwell", dwell, moved, None, states);
+            // An animated scene runs no `wait`, so the memory backstop's only
+            // other reader never fires — and under `realtime` *every* scene is
+            // animated, so without this the sampler can die of `max_capture_mb`
+            // and the rest of the recording silently freezes on the last state
+            // that made it into the log.
+            if self.sampler.over_budget() {
+                return Err(self.sampler.budget_error(states));
+            }
             WaitOutcome { state, hit_cap: false }
         } else {
             let want = if want {
@@ -391,6 +399,13 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
             );
         }
     }
+    // One last look at the backstop: the sampler can trip it after the final
+    // input's own check, and assembling a frozen state log into a movie that
+    // looks fine is exactly what this branch exists to prevent.
+    if rec.sampler.over_budget() {
+        let states = rec.sampler.states().committed().len();
+        return Err(rec.sampler.budget_error(states));
+    }
     let end = Instant::now();
 
     // Quit the app now, while the sampler is still free to run: states it
@@ -539,6 +554,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
 #[cfg(all(test, unix))]
 mod drive_tests {
     use super::*;
+    use crate::assemble::FrameSpec;
     use crate::pattern::screen_text;
 
     /// Drive a whole config through the recorder — no rendering, no output
@@ -599,6 +615,165 @@ await = "DONE"
             "the last key must settle on the awaited screen: {:?}",
             screens[1]
         );
+    }
+
+    /// Drive a whole config and assemble it — everything `run` does short of
+    /// rendering — and return the marks the driver produced together with the
+    /// frame specs they turn into.
+    fn drive_and_assemble(src: &str) -> Result<(Vec<Mark>, Vec<FrameSpec>)> {
+        let cfg: RecordConfig = toml::from_str(src).unwrap();
+        cfg.validate().unwrap();
+        let mut rec = Recorder::spawn(&cfg)?;
+        rec.seed()?;
+        for i in 0..cfg.scenes.len() {
+            rec.process(i)?;
+        }
+        let end = Instant::now();
+        let specs = {
+            let acc = rec.sampler.states();
+            let state_times: Vec<Instant> = acc.committed().iter().map(|s| s.t).collect();
+            assemble(&state_times, end, &rec.marks, rec.min_cs)
+        };
+        Ok((rec.marks, specs))
+    }
+
+    fn input_marks(marks: &[Mark]) -> Vec<&InputMark> {
+        marks
+            .iter()
+            .filter_map(|m| match m {
+                Mark::Input(i) => Some(i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `realtime = true` routes *every* scene down the animated branch of
+    /// `capture` — the dwell, the `last_change` comparison, and the
+    /// `settled_index` force-commit — which no other test in the suite
+    /// reaches, and which is where the `max_capture_mb` backstop is checked.
+    ///
+    /// The two scenes are deliberately the two shapes that branch produces.
+    /// Scene 0's key makes the child repaint during the dwell, so states land
+    /// inside its window and `assemble` measures them. Scene 1's key draws
+    /// nothing at all (`stty -echo`, and the child just reads and sleeps), so
+    /// its window holds no states whatsoever — the case Override 3 exists
+    /// for. Without that override scene 1 contributes zero frames and the
+    /// rule "every input owes at least one frame" is broken end-to-end, which
+    /// until now was only ever checked against hand-built `Mark`s.
+    #[test]
+    fn realtime_drives_every_scene_through_the_animated_path() {
+        let src = r#"
+launch = "stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; sleep 5"
+cols = 30
+rows = 3
+startup_ms = 300
+realtime = true
+
+[[scene]]
+keys = ["a"]
+hold_cs = 30
+
+[[scene]]
+keys = ["b"]
+hold_cs = 30
+"#;
+        let (marks, specs) = drive_and_assemble(src).expect("a realtime config must record");
+        let inputs = input_marks(&marks);
+        assert_eq!(inputs.len(), 2, "one input mark per key");
+        assert!(
+            inputs.iter().all(|i| i.animated),
+            "realtime must mark every input animated, or the dwell never ran"
+        );
+
+        for scene in 0..2 {
+            let n = specs.iter().filter(|s| s.scene == scene).count();
+            assert!(n >= 1, "scene {scene} owes at least one frame, got {n}: {specs:?}");
+        }
+        // Scene 1's key drew nothing, so its single frame is Override 3's:
+        // app-driven, carrying no input ordinal.
+        let scene1: Vec<&FrameSpec> = specs.iter().filter(|s| s.scene == 1).collect();
+        assert!(
+            scene1.iter().all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
+            "an animated input's frames are measured, never input-driven: {scene1:?}"
+        );
+    }
+
+    /// The measured-duration half of the same branch: a child that keeps
+    /// repainting for the whole dwell. Every frame the scene contributes must
+    /// be app-driven and measured — if `animated` failed to reach `assemble`,
+    /// one of them would instead be `InputDriven` holding the authored 60cs,
+    /// which is what this asserts against. The repaints are slow enough
+    /// (150ms) to clear the default 40ms `persist_ms`, so several of them
+    /// really do earn their own state.
+    #[test]
+    fn an_animated_scene_measures_the_repaints_during_its_dwell() {
+        let src = r#"
+launch = "stty -echo; printf 'READY'; read -n1 a; for i in 1 2 3 4; do printf '\rTICK%s' $i; sleep 0.15; done; sleep 5"
+cols = 30
+rows = 3
+startup_ms = 300
+
+[[scene]]
+keys = ["a"]
+animated = true
+hold_cs = 60
+"#;
+        let (marks, specs) = drive_and_assemble(src).expect("an animated scene must record");
+        assert_eq!(input_marks(&marks).len(), 1, "one input mark for the one key");
+        assert!(
+            specs.len() >= 2,
+            "the dwell spans several repaints, each of which earns a frame: {specs:?}"
+        );
+        assert!(
+            specs.iter().all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
+            "an animated scene measures every frame — none is the authored settled one: {specs:?}"
+        );
+        let total: u32 = specs.iter().map(|s| s.hold_cs as u32).sum();
+        assert!(
+            total <= 90,
+            "the measured frames must fit inside the 600ms dwell, not the authored hold: {total}cs"
+        );
+    }
+
+    /// `max_capture_mb` must be enforceable on the animated path too.
+    ///
+    /// The backstop's other reader lives inside `Sampler::wait`, and an
+    /// animated scene never calls `wait` — under `realtime` no scene does,
+    /// after `seed`. Without the check in the dwell the sampler thread simply
+    /// dies, the state log stops growing, and every later frame renders the
+    /// last state that made it in: a recording that freezes partway through
+    /// with no message at all.
+    ///
+    /// `seed()` is deliberately not called here. It runs a `wait()`, which
+    /// has always caught this and would catch it again before the animated
+    /// branch ever ran — leaving the branch under test unexercised. Skipping
+    /// it is what makes the dwell's own check the only thing that can produce
+    /// this error.
+    #[test]
+    fn an_animated_scene_reports_the_memory_backstop() {
+        let src = r#"
+launch = "printf 'HELLO'; sleep 5"
+cols = 30
+rows = 3
+startup_ms = 100
+realtime = true
+max_capture_mb = 0
+
+[[scene]]
+keys = []
+hold_cs = 20
+"#;
+        let cfg: RecordConfig = toml::from_str(src).unwrap();
+        cfg.validate().unwrap();
+        let mut rec = Recorder::spawn(&cfg).unwrap();
+        // Let the sampler commit its first state and trip the zero budget.
+        std::thread::sleep(Duration::from_millis(200));
+        let err = rec
+            .process(0)
+            .expect_err("an animated scene past the budget must not record silently")
+            .to_string();
+        assert!(err.contains("max_capture_mb"), "should name the limit: {err}");
+        assert!(err.contains("raise max_capture_mb"), "should name the two knobs: {err}");
     }
 
     /// An empty `keys = []` scene sends nothing but still owes exactly one
