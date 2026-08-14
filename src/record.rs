@@ -25,7 +25,7 @@ use image::RgbaImage;
 // Aliased: `config::FrameSource` is a different type with the same name (the
 // `encode` path's file-or-card), so neither name is imported bare here.
 use crate::assemble::FrameSource as Source;
-use crate::assemble::{assemble, InputMark, Mark};
+use crate::assemble::{assemble, FrameKind, InputMark, Mark};
 use crate::chrome::Chrome;
 use crate::config::{min_hold_cs, Action, RecordConfig, Scene};
 use crate::cursor;
@@ -151,13 +151,18 @@ impl<'a> Recorder<'a> {
             // declared animated that in fact held still contributes no frames
             // at all, because `assemble` measures animated scenes rather than
             // owing them one frame each.
-            crate::sampler::trace("dwell", dwell, a.last_change() > before, None, &a);
+            let moved = a.last_change() > before;
             // `assemble` gates the settled state on `!animated`, so this index
             // is never read downstream — an animated scene measures every
             // frame. The call is still load-bearing for its side effect:
             // force-committing pins the screen at the end of the dwell into
             // the state log, which is where the scene's last frame comes from.
             let state = a.settled_index(now);
+            let states = a.committed().len();
+            // The trace write can block on a slow stderr; the accumulator's
+            // mutex must not be held across it, or the sampler thread stalls.
+            drop(a);
+            crate::sampler::trace("dwell", dwell, moved, None, states);
             WaitOutcome { state, hit_cap: false }
         } else {
             let want = if want {
@@ -490,12 +495,27 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     drop(acc);
     drop(rec);
 
-    // Optional per-frame PNG dump for inspection.
+    // Optional per-frame PNG dump for inspection, plus a manifest mapping
+    // each frame back to its scene. `record` no longer prints a running
+    // `scene N -> M frames total` total that a bisect can do arithmetic on —
+    // app-driven frames make a scene's contribution unpredictable — so the
+    // manifest is what replaces that arithmetic with a lookup.
     if let Some(d) = dump_png {
         std::fs::create_dir_all(d).ok();
         for (i, f) in frames.iter().enumerate() {
             let _ = f.image.save(d.join(format!("frame{i:04}.png")));
         }
+        let mut man = String::from("frame\tscene\tinput\tkind\thold_cs\n");
+        for (i, spec) in specs.iter().enumerate() {
+            let kind = match spec.kind {
+                FrameKind::InputDriven => "input-driven",
+                FrameKind::AppDriven => "app-driven",
+                FrameKind::Card => "card",
+            };
+            let input = spec.input.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string());
+            man.push_str(&format!("{i:04}\t{}\t{input}\t{kind}\t{}\n", spec.scene, spec.hold_cs));
+        }
+        std::fs::write(d.join("manifest.tsv"), man).ok();
     }
 
     if frames.is_empty() {

@@ -263,14 +263,16 @@ impl Sampler {
         let base_change = a.last_change();
         loop {
             if self.over_budget.load(Ordering::Relaxed) {
-                trace("budget", start.elapsed(), false, want, &a);
+                let states = a.committed().len();
+                drop(a);
+                trace("budget", start.elapsed(), false, want, states);
                 let elapsed = self.start.elapsed();
                 bail!(
                     "recording exceeded max_capture_mb = {} after {} ({} states)\n\
                      raise max_capture_mb, or raise persist_ms to commit fewer states",
                     self.max_bytes / (1024 * 1024),
                     format_elapsed(elapsed),
-                    a.committed().len(),
+                    states,
                 );
             }
             let now = Instant::now();
@@ -289,25 +291,31 @@ impl Sampler {
             if phase1 && held && matched {
                 // Which half of phase 1 let this through is the interesting
                 // bit: `grace` means the screen never moved at all.
-                trace(if moved { "moved" } else { "grace" }, elapsed, moved, want, &a);
                 let idx = a.settled_index(now);
+                let states = a.committed().len();
+                drop(a);
+                trace(if moved { "moved" } else { "grace" }, elapsed, moved, want, states);
                 return Ok(WaitOutcome { state: idx, hit_cap: false });
             }
             if elapsed >= timeout {
                 if let Some(p) = want {
-                    trace("nomatch", elapsed, moved, want, &a);
+                    let states = a.committed().len();
                     let seen = a
                         .newest()
                         .map(|s| crate::pattern::screen_text(&s.grid))
                         .unwrap_or_default();
+                    drop(a);
+                    trace("nomatch", elapsed, moved, want, states);
                     bail!(
                         "await pattern {:?} never matched within {}ms\n--- last screen ---\n{seen}",
                         p.source(),
                         timeout.as_millis()
                     );
                 }
-                trace("cap", elapsed, moved, want, &a);
                 let idx = a.settled_index(now);
+                let states = a.committed().len();
+                drop(a);
+                trace("cap", elapsed, moved, want, states);
                 return Ok(WaitOutcome { state: idx, hit_cap: true });
             }
             let nap = Duration::from_millis(2)
@@ -342,12 +350,17 @@ impl Drop for Sampler {
 /// *before* it. A run full of `grace`/`moved=no` lines is dead air, which is
 /// exactly what this redesign set out to remove — and the only way to tell
 /// whether it did.
+///
+/// Takes `states` (the committed count) rather than `&StateAccumulator`
+/// itself: the accumulator's mutex must be released before this runs, since
+/// `eprintln!` can block on a slow stderr and the sampler thread would stall
+/// for as long as it waited on that same lock.
 pub(crate) fn trace(
     why: &str,
     elapsed: Duration,
     moved: bool,
     want: Option<&Pattern>,
-    a: &StateAccumulator,
+    states: usize,
 ) {
     if std::env::var_os("ANSIDRAMA_TRACE").is_none() {
         return;
@@ -356,7 +369,7 @@ pub(crate) fn trace(
         "wait {why:>7} after {:>7.1}ms  moved={:<3} states={:<4} await={}",
         elapsed.as_secs_f32() * 1000.0,
         if moved { "yes" } else { "no" },
-        a.committed().len(),
+        states,
         want.map(|p| p.source()).unwrap_or("-"),
     );
 }

@@ -39,7 +39,8 @@ fn record_produces_webp_without_tmux() {
     )
     .unwrap();
 
-    let result = ansidrama::record(&toml, Some(&out), None);
+    let png_dir = dir.join("frames");
+    let result = ansidrama::record(&toml, Some(&out), Some(&png_dir));
 
     // Restore PATH and clean up before asserting, so failures don't leave a
     // shadowed tmux or a stray temp dir behind.
@@ -49,6 +50,16 @@ fn record_produces_webp_without_tmux() {
 
     let len = std::fs::metadata(&out).unwrap().len();
     assert!(len > 0, "webp should be non-empty");
+
+    // The config's single `keys = []` scene sends nothing, so it owes exactly
+    // one input-driven frame — this is the "hold the current screen" case.
+    // The manifest turns that expectation into an assertable frame count.
+    let manifest = std::fs::read_to_string(png_dir.join("manifest.tsv")).expect("manifest written");
+    let lines: Vec<&str> = manifest.lines().collect();
+    assert_eq!(lines[0], "frame\tscene\tinput\tkind\thold_cs");
+    assert_eq!(lines.len() - 1, 1, "one row for the single-scene config");
+    let fields: Vec<&str> = lines[1].split('\t').collect();
+    assert_eq!(fields[3], "input-driven");
 
     let _ = std::fs::remove_dir_all(&dir); // the test's own scratch dir
 }

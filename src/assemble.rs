@@ -118,6 +118,8 @@ pub fn assemble(
                 let settled_in_window = state_times
                     .get(i.settled)
                     .is_some_and(|t| *t >= i.t && *t < upto);
+                let any_state_in_window =
+                    state_times.iter().any(|t| *t >= i.t && *t < upto);
 
                 // Override 1: an input that changed nothing on screen has its
                 // settled state predate it, so the state-scan below never
@@ -131,6 +133,27 @@ pub fn assemble(
                         mouse: i.mouse,
                         scene: i.scene,
                         input: Some(this_ord),
+                    });
+                }
+
+                // Override 3: an animated input runs no wait, so nothing is
+                // ever pending and `settled` predates the window like above —
+                // but here the state-scan below has nothing to visit at all
+                // when the screen never moved during the dwell. Without this,
+                // a screen that happens to hold still under `realtime` (or a
+                // scene marked `animated`) contributes zero frames, and the
+                // rule that every input owes at least one is broken. Emit one
+                // app-driven frame, measured over the window's own duration —
+                // the dwell becomes the measured hold, same as every other
+                // frame in an animated scene.
+                if i.animated && !any_state_in_window && state_times.get(i.settled).is_some() {
+                    out.push(FrameSpec {
+                        source: FrameSource::State(i.settled),
+                        kind: FrameKind::AppDriven,
+                        hold_cs: cs(upto.saturating_duration_since(i.t), min_cs),
+                        mouse: i.mouse,
+                        scene: i.scene,
+                        input: None,
                     });
                 }
 
@@ -298,6 +321,31 @@ mod tests {
         assert!(f.iter().all(|s| matches!(s.kind, FrameKind::InputDriven)));
         assert_eq!(f[0].hold_cs, 9);
         assert_eq!(f[1].hold_cs, 28);
+    }
+
+    // --- Override 3: an animated input whose window holds no states still
+    //     owes exactly one frame ---
+
+    #[test]
+    fn an_animated_input_with_no_states_in_its_window_still_gets_one_frame() {
+        let t0 = Instant::now();
+        // One state, well before the input; the input's own window (from its
+        // own timestamp to the next input, here `end`) contains no states at
+        // all — the screen never moved during the dwell.
+        let times = vec![t0 + ms(1)];
+        let marks = vec![Mark::Input(InputMark {
+            t: t0 + ms(50),
+            scene: 0,
+            settled: 0,
+            authored_cs: 99,
+            mouse: None,
+            animated: true,
+        })];
+        let f = assemble(&times, t0 + ms(150), &marks, 1);
+        assert_eq!(f.len(), 1, "an animated input owes a frame even when nothing moved");
+        assert!(matches!(f[0].kind, FrameKind::AppDriven));
+        assert_eq!(f[0].hold_cs, 10, "150ms - 50ms = 100ms = 10cs");
+        assert_eq!(f[0].input, None, "app-driven frames carry no input ordinal");
     }
 
     // --- Override 2: FrameSpec carries the per-scene input ordinal ---
