@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+### Fixed
+
+## 0.3.0 - 2026-08-14
+
+### New
+
 - **`record`**: `await` — a scene declares what its finished screen looks like, and the recorder waits for that instead of guessing from timing. Either `await = "text"` (whole-screen match) or `await = { find = "text", row = -1 }` (row-scoped; a negative row counts from the bottom). If the pattern never matches within `await_ms`, the run **aborts** naming the pattern and showing the last screen — never a silently wrong frame. Patterns are compiled at config load, and an `await` that could never be honoured (on a `card` scene, on an `animated` scene, or anywhere under `realtime = true`) is rejected at load rather than silently ignored.
 - **`record`**: `animated = true` (per scene) — for a screen that never holds still (spinner, clock, progress bar). Instead of waiting for stability, the scene dwells for each input's own authored hold and records whatever the app drew during it.
 - **`record`**: `realtime = true` (global) — play the whole recording back at measured time, as if every scene were `animated`.
