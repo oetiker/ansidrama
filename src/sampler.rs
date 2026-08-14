@@ -502,7 +502,22 @@ mod acc_tests {
     /// blanking the cursor around a fast redraw — is the common case, and it
     /// falls out of the existing pending/committed rule for free: each blip
     /// is superseded before it ever persists, same as a torn mid-repaint
-    /// grid. Assert no extra state survives.
+    /// grid.
+    ///
+    /// The caret round-trips back to where it started (`Some((0,0))`), so
+    /// `len() == 1` and `caret == Some((0,0))` hold *even under the reverted,
+    /// grid-only comparison* — the grid never changes at all in this test, so
+    /// nothing is ever "changed", the original `t0` pending survives
+    /// untouched, and it commits carrying the same `Some((0,0))` it started
+    /// with. Count and caret value cannot tell these two behaviours apart.
+    /// What differs is *which* pending state survives to commit, and that
+    /// shows up only in its timestamp: `t0` if `observe` never noticed either
+    /// caret transition, `t0 + ms(10)` (the second transition, back to
+    /// visible) if it restarted the pending state at each one — which is what
+    /// must happen for the intermediate hidden state to have been dropped
+    /// rather than simply never seen. So the timestamp is the assertion that
+    /// actually discriminates; do not simplify this back to checking only the
+    /// caret.
     #[test]
     fn a_transient_caret_hide_is_dropped_like_a_transient_grid_change() {
         let t0 = Instant::now();
@@ -512,6 +527,13 @@ mod acc_tests {
         a.observe(g('a'), Some((0, 0)), t0 + ms(10)); // cursor back, same spot
         a.observe(g('a'), Some((0, 0)), t0 + ms(60)); // this one survives persist
         assert_eq!(a.committed().len(), 1, "the hide/show blip must not add a state");
+        assert_eq!(
+            a.committed()[0].t,
+            t0 + ms(10),
+            "the committed state must be the one restarted at the last caret \
+             transition, not the original t0 pending that a grid-only \
+             comparison would have left untouched"
+        );
         assert_eq!(a.committed()[0].caret, Some((0, 0)));
     }
 
