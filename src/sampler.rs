@@ -150,39 +150,39 @@ impl Sampler {
         let thread = {
             let (acc, stop, over) = (Arc::clone(&acc), Arc::clone(&stop), Arc::clone(&over_budget));
             std::thread::spawn(move || {
+                // The stop flag is only checked here, at the top of the loop,
+                // after the previous iteration's `sleep(sample)` — so a
+                // `stop()`/`Drop` can block for up to one `sample` interval.
+                // Invisible at test-sized samples; worth knowing at a large
+                // configured `sample_ms`.
                 while !stop.load(Ordering::Relaxed) {
                     let gen = handle.generation();
+                    // Something arrived: pay for the conversion, but do it
+                    // *before* taking the accumulator lock, and take the
+                    // timestamp together with the snapshot so it describes
+                    // the screen actually read. Nothing arrived: a pending
+                    // state may still have earned promotion, but that costs
+                    // one guarded read, never a grid clone.
+                    let sampled = if gen != last_gen { Some(handle.snapshot()) } else { None };
+                    let now = Instant::now();
                     let (lock, cvar) = &*acc;
-                    if gen != last_gen {
-                        // Something arrived: pay for the conversion, but do it
-                        // *before* taking the accumulator lock, and take the
-                        // timestamp together with the snapshot so it describes
-                        // the screen actually read.
-                        let (grid, caret, new_gen) = handle.snapshot();
-                        let now = Instant::now();
-                        last_gen = new_gen;
+                    let bytes = {
                         let mut a = lock.lock().unwrap();
-                        a.observe(grid, caret, now);
-                        if a.bytes() > max_bytes {
-                            over.store(true, Ordering::Relaxed);
-                            cvar.notify_all();
-                            return;
+                        match sampled {
+                            Some((grid, caret, new_gen)) => {
+                                last_gen = new_gen;
+                                a.observe(grid, caret, now);
+                            }
+                            None => a.tick(now),
                         }
+                        a.bytes()
+                    };
+                    if bytes > max_bytes {
+                        over.store(true, Ordering::Relaxed);
                         cvar.notify_all();
-                    } else {
-                        // Nothing arrived: a pending state may still have
-                        // earned promotion, but that costs one guarded read,
-                        // never a grid clone.
-                        let now = Instant::now();
-                        let mut a = lock.lock().unwrap();
-                        a.tick(now);
-                        if a.bytes() > max_bytes {
-                            over.store(true, Ordering::Relaxed);
-                            cvar.notify_all();
-                            return;
-                        }
-                        cvar.notify_all();
+                        return;
                     }
+                    cvar.notify_all();
                     std::thread::sleep(sample);
                 }
             })
@@ -225,6 +225,13 @@ impl Sampler {
     /// apart from here. That is what `want` is for — pin the pattern the
     /// real reply must match, and a merely-plausible intermediate screen
     /// cannot satisfy it.
+    ///
+    /// Phase 1 is paid even when `want` is set — deliberately. A pattern that
+    /// already matches a screen from *before* this call (one the app has not
+    /// yet reacted onto) must not end the wait instantly: that is a stale
+    /// match, the same shape of bug as capturing a screen the app never
+    /// drew. Skipping the grace whenever `want` matches would reintroduce it.
+    /// The bounded `change` cost is the price of ruling that out.
     pub fn wait(
         &self,
         want: Option<&Pattern>,
@@ -261,9 +268,7 @@ impl Sampler {
             // Phase 1 is satisfied by any change, or by the grace expiring.
             let phase1 = moved || grace_left.is_zero();
             if phase1 && held && matched {
-                let idx = a
-                    .force_commit(now)
-                    .unwrap_or_else(|| a.committed().len().saturating_sub(1));
+                let idx = settled_index(&mut a, now);
                 return Ok(WaitOutcome { state: idx, hit_cap: false });
             }
             if elapsed >= timeout {
@@ -278,9 +283,7 @@ impl Sampler {
                         timeout.as_millis()
                     );
                 }
-                let idx = a
-                    .force_commit(now)
-                    .unwrap_or_else(|| a.committed().len().saturating_sub(1));
+                let idx = settled_index(&mut a, now);
                 return Ok(WaitOutcome { state: idx, hit_cap: true });
             }
             let nap = Duration::from_millis(2)
@@ -297,6 +300,24 @@ impl Drop for Sampler {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+/// The index of the state a `wait()` call is settling on: the state it just
+/// force-committed, or — if the sampler thread already promoted it (the
+/// normal case whenever `stable >= persist`) — the last committed state.
+/// `Sampler::start` observes one state synchronously before any `wait()` can
+/// run, so `committed()` being empty here would be that invariant broken,
+/// not a reachable outcome — made explicit rather than laundered into `0`.
+fn settled_index(a: &mut StateAccumulator, now: Instant) -> usize {
+    match a.force_commit(now) {
+        Some(idx) => idx,
+        None => a.committed().len().checked_sub(1).unwrap_or_else(|| {
+            unreachable!(
+                "Sampler::start observes one state before any wait() can run; \
+                 committed() must not be empty here"
+            )
+        }),
     }
 }
 
@@ -527,7 +548,12 @@ mod pty_tests {
         assert!(text.contains("LATE"), "TRAIL was mistaken for the real reply: {text:?}");
     }
 
-    /// An `await` that matches returns promptly and does not spend the timeout.
+    /// An `await` that matches returns promptly and does not spend the
+    /// timeout. Phase 1's `change` grace is paid regardless (by design — see
+    /// `wait`'s doc comment), so the expected latency is ~`change` + `stable`
+    /// here (~140ms), not just `stable`; a small `change` and a bound well
+    /// under the timeout is what makes this discriminate a wrongly-burned
+    /// grace or timeout from a normal return.
     #[test]
     fn await_returns_on_match() {
         let env = BTreeMap::new();
@@ -536,14 +562,18 @@ mod pty_tests {
         let p = Pattern::new("HELLO", Some(0)).unwrap();
         let started = Instant::now();
         let out = s
-            .wait(Some(&p), Duration::from_millis(500), Duration::from_millis(40), Duration::from_secs(5))
+            .wait(Some(&p), Duration::from_millis(100), Duration::from_millis(40), Duration::from_secs(5))
             .unwrap();
+        let elapsed = started.elapsed();
         assert!(!out.hit_cap);
-        assert!(started.elapsed() < Duration::from_secs(2), "spent too long: {:?}", started.elapsed());
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "spent too long for a 100ms change grace + 40ms stable: {elapsed:?}"
+        );
     }
 
-    /// An `await` that never matches is an error naming the pattern — never a
-    /// silently wrong frame.
+    /// An `await` that never matches is an error naming the pattern *and*
+    /// showing the last screen's text — never a silently wrong frame.
     #[test]
     fn await_that_never_matches_is_an_error() {
         let env = BTreeMap::new();
@@ -555,6 +585,28 @@ mod pty_tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("GOODBYE"), "error should name the pattern: {err}");
+        assert!(err.contains("HELLO"), "error should show the last screen's text: {err}");
+    }
+
+    /// The over-budget path: the thread's early return, `wait`'s bail, and
+    /// Override 3's message. `max_bytes` is deliberately absurdly small (1
+    /// byte) so the very first committed state trips it. That renders
+    /// `max_capture_mb = 0` via integer division — a test-only artifact of
+    /// picking a sub-MB budget to trip the limit fast; a real config value
+    /// is always at least 1 whole MB, so the message never needs to guard
+    /// against a `0` in practice.
+    #[test]
+    fn exceeding_the_memory_budget_is_an_error_naming_the_numbers() {
+        let env = BTreeMap::new();
+        let term = Term::spawn(20, 3, "printf 'HELLO'; sleep 3", &env).unwrap();
+        let s = Sampler::start(term.handle(), Duration::from_millis(5), Duration::from_millis(40), 1);
+        let err = s
+            .wait(None, Duration::from_millis(200), Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("max_capture_mb"), "should name the limit: {err}");
+        assert!(err.contains("states)"), "should name the state count: {err}");
+        assert!(err.contains("raise max_capture_mb"), "should name the two knobs: {err}");
     }
 
     /// An input that draws nothing costs exactly the grace, then returns
