@@ -53,7 +53,11 @@ impl StateAccumulator {
         let unchanged = newest.is_some_and(|s| s.grid == grid && s.caret == caret);
         if !unchanged {
             // A genuinely new screen. Whatever was pending never persisted.
-            self.pending = Some(State { grid, caret, t: now });
+            self.pending = Some(State {
+                grid,
+                caret,
+                t: now,
+            });
             self.last_change = now;
             return;
         }
@@ -169,7 +173,11 @@ impl Sampler {
         }
 
         let thread = {
-            let (acc, stop, over) = (Arc::clone(&acc), Arc::clone(&stop), Arc::clone(&over_budget));
+            let (acc, stop, over) = (
+                Arc::clone(&acc),
+                Arc::clone(&stop),
+                Arc::clone(&over_budget),
+            );
             std::thread::spawn(move || {
                 // The stop flag is only checked here, at the top of the loop,
                 // after the previous iteration's `sleep(sample)` — so a
@@ -184,7 +192,11 @@ impl Sampler {
                     // the screen actually read. Nothing arrived: a pending
                     // state may still have earned promotion, but that costs
                     // one guarded read, never a grid clone.
-                    let sampled = if gen != last_gen { Some(handle.snapshot()) } else { None };
+                    let sampled = if gen != last_gen {
+                        Some(handle.snapshot())
+                    } else {
+                        None
+                    };
                     let now = Instant::now();
                     let (lock, cvar) = &*acc;
                     let bytes = {
@@ -309,8 +321,17 @@ impl Sampler {
                 let idx = a.settled_index(now);
                 let states = a.committed().len();
                 drop(a);
-                trace(if moved { "moved" } else { "grace" }, elapsed, moved, want, states);
-                return Ok(WaitOutcome { state: idx, hit_cap: false });
+                trace(
+                    if moved { "moved" } else { "grace" },
+                    elapsed,
+                    moved,
+                    want,
+                    states,
+                );
+                return Ok(WaitOutcome {
+                    state: idx,
+                    hit_cap: false,
+                });
             }
             if elapsed >= timeout {
                 if let Some(p) = want {
@@ -331,7 +352,10 @@ impl Sampler {
                 let states = a.committed().len();
                 drop(a);
                 trace("cap", elapsed, moved, want, states);
-                return Ok(WaitOutcome { state: idx, hit_cap: true });
+                return Ok(WaitOutcome {
+                    state: idx,
+                    hit_cap: true,
+                });
             }
             let nap = Duration::from_millis(2)
                 .min(timeout.saturating_sub(elapsed))
@@ -406,7 +430,12 @@ mod acc_tests {
     use super::*;
 
     fn cell(ch: char) -> Cell {
-        Cell { ch, fg: (0, 0, 0), bg: (0, 0, 0), bold: false }
+        Cell {
+            ch,
+            fg: (0, 0, 0),
+            bg: (0, 0, 0),
+            bold: false,
+        }
     }
     fn g(ch: char) -> Vec<Vec<Cell>> {
         vec![vec![cell(ch); 4]; 2]
@@ -423,7 +452,11 @@ mod acc_tests {
         assert_eq!(a.committed().len(), 0, "not yet survived persist");
         a.observe(g('a'), None, t0 + ms(50));
         assert_eq!(a.committed().len(), 1);
-        assert_eq!(a.committed()[0].t, t0, "timestamp is when it first appeared");
+        assert_eq!(
+            a.committed()[0].t,
+            t0,
+            "timestamp is when it first appeared"
+        );
     }
 
     #[test]
@@ -434,7 +467,11 @@ mod acc_tests {
         a.observe(g('b'), None, t0 + ms(5)); // supersedes 'a' before it persisted
         a.observe(g('b'), None, t0 + ms(60));
         let committed: Vec<char> = a.committed().iter().map(|s| s.grid[0][0].ch).collect();
-        assert_eq!(committed, vec!['b'], "the torn intermediate must not survive");
+        assert_eq!(
+            committed,
+            vec!['b'],
+            "the torn intermediate must not survive"
+        );
     }
 
     #[test]
@@ -444,7 +481,11 @@ mod acc_tests {
         a.observe(g('a'), None, t0);
         a.observe(g('b'), None, t0 + ms(10));
         a.observe(g('a'), None, t0 + ms(20));
-        assert_eq!(a.last_change(), t0 + ms(20), "A->B->A is two changes, not zero");
+        assert_eq!(
+            a.last_change(),
+            t0 + ms(20),
+            "A->B->A is two changes, not zero"
+        );
     }
 
     #[test]
@@ -454,7 +495,11 @@ mod acc_tests {
         a.observe(g('a'), None, t0);
         assert_eq!(a.committed().len(), 0);
         assert_eq!(a.force_commit(t0 + ms(40)), Some(0));
-        assert_eq!(a.committed().len(), 1, "an input's settled state is always kept");
+        assert_eq!(
+            a.committed().len(),
+            1,
+            "an input's settled state is always kept"
+        );
         // Idempotent: nothing pending now.
         assert_eq!(a.force_commit(t0 + ms(41)), None);
     }
@@ -477,7 +522,10 @@ mod acc_tests {
         assert_eq!(a.bytes(), 0);
         a.observe(g('a'), None, t0);
         a.observe(g('a'), None, t0 + ms(50));
-        assert!(a.bytes() > 0, "a committed state must count toward the memory bound");
+        assert!(
+            a.bytes() > 0,
+            "a committed state must count toward the memory bound"
+        );
     }
 
     /// A plain space overwrites a blank cell with a blank cell: the grid is
@@ -538,7 +586,11 @@ mod acc_tests {
         a.observe(g('a'), None, t0 + ms(5)); // cursor hidden mid-redraw
         a.observe(g('a'), Some((0, 0)), t0 + ms(10)); // cursor back, same spot
         a.observe(g('a'), Some((0, 0)), t0 + ms(60)); // this one survives persist
-        assert_eq!(a.committed().len(), 1, "the hide/show blip must not add a state");
+        assert_eq!(
+            a.committed().len(),
+            1,
+            "the hide/show blip must not add a state"
+        );
         assert_eq!(
             a.committed()[0].t,
             t0 + ms(10),
@@ -577,7 +629,11 @@ mod acc_tests {
         assert_eq!(a.committed().len(), 0, "not yet survived persist");
         a.tick(t0 + ms(50));
         assert_eq!(a.committed().len(), 1);
-        assert_eq!(a.committed()[0].t, t0, "timestamp is when it first appeared");
+        assert_eq!(
+            a.committed()[0].t,
+            t0,
+            "timestamp is when it first appeared"
+        );
     }
 }
 
@@ -612,8 +668,13 @@ mod pty_tests {
         .unwrap();
         let s = sampler_for(&term);
         let ready = Pattern::new("READY", None).unwrap();
-        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
-            .unwrap();
+        s.wait(
+            Some(&ready),
+            Duration::ZERO,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+        )
+        .unwrap();
 
         term.send_key("x").unwrap();
         let out = s
@@ -626,7 +687,10 @@ mod pty_tests {
             .unwrap();
         let acc = s.states();
         let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
-        assert!(text.contains("LATE"), "captured before the app answered: {text:?}");
+        assert!(
+            text.contains("LATE"),
+            "captured before the app answered: {text:?}"
+        );
     }
 
     /// The disarm bug: bytes still draining from the *previous* input must not
@@ -651,19 +715,37 @@ mod pty_tests {
         .unwrap();
         let s = sampler_for(&term);
         let ready = Pattern::new("READY", None).unwrap();
-        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
-            .unwrap();
+        s.wait(
+            Some(&ready),
+            Duration::ZERO,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+        )
+        .unwrap();
 
         term.send_key("a").unwrap();
-        let _ = s.wait(None, Duration::from_millis(50), Duration::from_millis(40), Duration::from_millis(200));
+        let _ = s.wait(
+            None,
+            Duration::from_millis(50),
+            Duration::from_millis(40),
+            Duration::from_millis(200),
+        );
         term.send_key("b").unwrap();
         let out = s
-            .wait(None, Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
+            .wait(
+                None,
+                Duration::from_millis(2000),
+                Duration::from_millis(40),
+                Duration::from_secs(5),
+            )
             .unwrap();
 
         let acc = s.states();
         let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
-        assert!(text.contains("LATE"), "previous input's output ended the wait: {text:?}");
+        assert!(
+            text.contains("LATE"),
+            "previous input's output ended the wait: {text:?}"
+        );
     }
 
     /// Secondary benefit of `observe` comparing caret alongside grid (the fix
@@ -684,13 +766,23 @@ mod pty_tests {
         .unwrap();
         let s = sampler_for(&term);
         let ready = Pattern::new("READY", None).unwrap();
-        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
-            .unwrap();
+        s.wait(
+            Some(&ready),
+            Duration::ZERO,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+        )
+        .unwrap();
 
         term.send_key("k").unwrap();
         let started = Instant::now();
-        s.wait(None, Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
-            .unwrap();
+        s.wait(
+            None,
+            Duration::from_millis(2000),
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+        )
+        .unwrap();
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(500),
@@ -721,20 +813,38 @@ mod pty_tests {
         .unwrap();
         let s = sampler_for(&term);
         let ready = Pattern::new("READY", None).unwrap();
-        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
-            .unwrap();
+        s.wait(
+            Some(&ready),
+            Duration::ZERO,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+        )
+        .unwrap();
 
         term.send_key("a").unwrap();
-        let _ = s.wait(None, Duration::from_millis(50), Duration::from_millis(40), Duration::from_millis(200));
+        let _ = s.wait(
+            None,
+            Duration::from_millis(50),
+            Duration::from_millis(40),
+            Duration::from_millis(200),
+        );
         term.send_key("b").unwrap();
         let late = Pattern::new("LATE", None).unwrap();
         let out = s
-            .wait(Some(&late), Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
+            .wait(
+                Some(&late),
+                Duration::from_millis(2000),
+                Duration::from_millis(40),
+                Duration::from_secs(5),
+            )
             .unwrap();
 
         let acc = s.states();
         let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
-        assert!(text.contains("LATE"), "TRAIL was mistaken for the real reply: {text:?}");
+        assert!(
+            text.contains("LATE"),
+            "TRAIL was mistaken for the real reply: {text:?}"
+        );
     }
 
     /// An `await` that matches returns promptly and does not spend the
@@ -751,7 +861,12 @@ mod pty_tests {
         let p = Pattern::new("HELLO", Some(0)).unwrap();
         let started = Instant::now();
         let out = s
-            .wait(Some(&p), Duration::from_millis(100), Duration::from_millis(40), Duration::from_secs(5))
+            .wait(
+                Some(&p),
+                Duration::from_millis(100),
+                Duration::from_millis(40),
+                Duration::from_secs(5),
+            )
             .unwrap();
         let elapsed = started.elapsed();
         assert!(!out.hit_cap);
@@ -770,11 +885,22 @@ mod pty_tests {
         let s = sampler_for(&term);
         let p = Pattern::new("GOODBYE", None).unwrap();
         let err = s
-            .wait(Some(&p), Duration::from_millis(100), Duration::from_millis(40), Duration::from_millis(400))
+            .wait(
+                Some(&p),
+                Duration::from_millis(100),
+                Duration::from_millis(40),
+                Duration::from_millis(400),
+            )
             .unwrap_err()
             .to_string();
-        assert!(err.contains("GOODBYE"), "error should name the pattern: {err}");
-        assert!(err.contains("HELLO"), "error should show the last screen's text: {err}");
+        assert!(
+            err.contains("GOODBYE"),
+            "error should name the pattern: {err}"
+        );
+        assert!(
+            err.contains("HELLO"),
+            "error should show the last screen's text: {err}"
+        );
     }
 
     /// The over-budget path: the thread's early return, `wait`'s bail, and
@@ -788,14 +914,33 @@ mod pty_tests {
     fn exceeding_the_memory_budget_is_an_error_naming_the_numbers() {
         let env = BTreeMap::new();
         let term = Term::spawn(20, 3, "printf 'HELLO'; sleep 3", &env).unwrap();
-        let s = Sampler::start(term.handle(), Duration::from_millis(5), Duration::from_millis(40), 1);
+        let s = Sampler::start(
+            term.handle(),
+            Duration::from_millis(5),
+            Duration::from_millis(40),
+            1,
+        );
         let err = s
-            .wait(None, Duration::from_millis(200), Duration::from_millis(40), Duration::from_secs(5))
+            .wait(
+                None,
+                Duration::from_millis(200),
+                Duration::from_millis(40),
+                Duration::from_secs(5),
+            )
             .unwrap_err()
             .to_string();
-        assert!(err.contains("max_capture_mb"), "should name the limit: {err}");
-        assert!(err.contains("states)"), "should name the state count: {err}");
-        assert!(err.contains("raise max_capture_mb"), "should name the two knobs: {err}");
+        assert!(
+            err.contains("max_capture_mb"),
+            "should name the limit: {err}"
+        );
+        assert!(
+            err.contains("states)"),
+            "should name the state count: {err}"
+        );
+        assert!(
+            err.contains("raise max_capture_mb"),
+            "should name the two knobs: {err}"
+        );
     }
 
     /// An input that draws nothing costs exactly the grace, then returns
@@ -805,15 +950,28 @@ mod pty_tests {
         let env = BTreeMap::new();
         let term = Term::spawn(20, 3, "printf 'IDLE'; sleep 3", &env).unwrap();
         let s = sampler_for(&term);
-        s.wait(None, Duration::from_millis(300), Duration::from_millis(40), Duration::from_secs(2))
-            .unwrap();
+        s.wait(
+            None,
+            Duration::from_millis(300),
+            Duration::from_millis(40),
+            Duration::from_secs(2),
+        )
+        .unwrap();
         // Second wait: nothing changes at all.
         let started = Instant::now();
         let out = s
-            .wait(None, Duration::from_millis(150), Duration::from_millis(40), Duration::from_millis(600))
+            .wait(
+                None,
+                Duration::from_millis(150),
+                Duration::from_millis(40),
+                Duration::from_millis(600),
+            )
             .unwrap();
         let elapsed = started.elapsed();
-        assert!(!out.hit_cap, "grace expiring then a stable screen is a normal return");
+        assert!(
+            !out.hit_cap,
+            "grace expiring then a stable screen is a normal return"
+        );
         assert!(
             elapsed >= Duration::from_millis(150),
             "must not return before the grace has been paid: {elapsed:?}"

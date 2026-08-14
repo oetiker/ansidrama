@@ -78,7 +78,10 @@ impl<'a> Recorder<'a> {
             .scenes
             .iter()
             .enumerate()
-            .map(|(i, s)| s.pattern(cfg.rows).with_context(|| format!("scene {i} await")))
+            .map(|(i, s)| {
+                s.pattern(cfg.rows)
+                    .with_context(|| format!("scene {i} await"))
+            })
             .collect::<Result<Vec<_>>>()?;
         let term = Term::spawn(cfg.cols as u16, cfg.rows as u16, &cfg.launch, &cfg.env)
             .context("start embedded terminal")?;
@@ -171,7 +174,10 @@ impl<'a> Recorder<'a> {
             if self.sampler.over_budget() {
                 return Err(self.sampler.budget_error(states));
             }
-            WaitOutcome { state, hit_cap: false }
+            WaitOutcome {
+                state,
+                hit_cap: false,
+            }
         } else {
             let want = if want {
                 self.patterns[scene].as_ref()
@@ -216,7 +222,11 @@ impl<'a> Recorder<'a> {
     fn move_to(&mut self, scene: usize, target: (u32, u32), move_cs: u16) {
         if let Some(from) = self.last_mouse {
             for mouse in line_cells(from, target) {
-                self.marks.push(Mark::MouseMove { scene, mouse, hold_cs: move_cs });
+                self.marks.push(Mark::MouseMove {
+                    scene,
+                    mouse,
+                    hold_cs: move_cs,
+                });
             }
         }
         self.last_mouse = Some(target);
@@ -391,7 +401,12 @@ fn dump_failure_screen(
                 .get(cy as usize)
                 .and_then(|r| r.get(cx as usize))
                 .copied()
-                .unwrap_or(Cell { ch: ' ', fg: (0, 0, 0), bg: (255, 255, 255), bold: false });
+                .unwrap_or(Cell {
+                    ch: ' ',
+                    fg: (0, 0, 0),
+                    bg: (255, 255, 255),
+                    bold: false,
+                });
             renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
         }
     }
@@ -423,9 +438,10 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
         // but the screen is wrong", and no text dump can show that.
         if let Err(e) = rec.process(i) {
             return Err(match dump_failure_screen(&rec, &cfg, &out_path) {
-                Some(p) => {
-                    e.context(format!("recording failed; last screen written to {}", p.display()))
-                }
+                Some(p) => e.context(format!(
+                    "recording failed; last screen written to {}",
+                    p.display()
+                )),
                 None => e,
             });
         }
@@ -577,8 +593,14 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
                 FrameKind::AppDriven => "app-driven",
                 FrameKind::Card => "card",
             };
-            let input = spec.input.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string());
-            man.push_str(&format!("{i:04}\t{}\t{input}\t{kind}\t{}\n", spec.scene, spec.hold_cs));
+            let input = spec
+                .input
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            man.push_str(&format!(
+                "{i:04}\t{}\t{input}\t{kind}\t{}\n",
+                spec.scene, spec.hold_cs
+            ));
         }
         // Not `.ok()` like the PNGs above: a missing frame is obvious, a
         // *stale* manifest left over from an earlier dump into the same
@@ -615,11 +637,39 @@ mod drive_tests {
     /// Drive a whole config through the recorder — no rendering, no output
     /// file — and return, for each input mark in order, the text of the screen
     /// its wait settled on.
+    /// Block until the child has printed `READY`, before any scene is driven.
+    ///
+    /// `startup_ms` is a floor, not a synchronisation point: nothing about it
+    /// promises the shell has finished starting up when it expires. On a slow
+    /// or loaded machine it can pass before `stty -echo` has run, and the
+    /// first key is then echoed onto the screen instead of being consumed by
+    /// `read` — so the wait settles on the echoed keystroke rather than the
+    /// app's reply. Every drive test's child prints `READY` as the last thing
+    /// it does while setting up; gating on that makes these tests independent
+    /// of how fast the machine is, which a larger `startup_ms` never would.
+    ///
+    /// Each child also opens with a deliberate `sleep 0.5`, so the floor is
+    /// *always* too short and this gate is what actually provides the
+    /// synchronisation. Without it these tests pass on a fast machine and fail
+    /// in CI — which is exactly what they did. Do not remove either the sleep
+    /// or the gate to make the suite a couple of seconds quicker.
+    fn wait_for_ready(rec: &Recorder) -> Result<()> {
+        let ready = Pattern::new("READY", None)?;
+        rec.sampler.wait(
+            Some(&ready),
+            Duration::ZERO,
+            Duration::from_millis(40),
+            Duration::from_secs(10),
+        )?;
+        Ok(())
+    }
+
     fn settled_screens(src: &str) -> Result<Vec<String>> {
         let cfg: RecordConfig = toml::from_str(src).unwrap();
         cfg.validate().unwrap();
         let mut rec = Recorder::spawn(&cfg)?;
         rec.seed()?;
+        wait_for_ready(&rec)?;
         for i in 0..cfg.scenes.len() {
             rec.process(i)?;
         }
@@ -648,7 +698,7 @@ mod drive_tests {
     #[test]
     fn await_is_attached_to_the_scenes_final_key() {
         let src = r#"
-launch = "stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; printf ' DONE'; sleep 5"
+launch = "sleep 0.5; stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; printf ' DONE'; sleep 5"
 cols = 30
 rows = 3
 startup_ms = 300
@@ -680,6 +730,7 @@ await = "DONE"
         cfg.validate().unwrap();
         let mut rec = Recorder::spawn(&cfg)?;
         rec.seed()?;
+        wait_for_ready(&rec)?;
         for i in 0..cfg.scenes.len() {
             rec.process(i)?;
         }
@@ -718,7 +769,7 @@ await = "DONE"
     #[test]
     fn realtime_drives_every_scene_through_the_animated_path() {
         let src = r#"
-launch = "stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; sleep 5"
+launch = "sleep 0.5; stty -echo; printf 'READY'; read -n1 a; printf ' ONE'; read -n1 b; sleep 5"
 cols = 30
 rows = 3
 startup_ms = 300
@@ -742,13 +793,18 @@ hold_cs = 30
 
         for scene in 0..2 {
             let n = specs.iter().filter(|s| s.scene == scene).count();
-            assert!(n >= 1, "scene {scene} owes at least one frame, got {n}: {specs:?}");
+            assert!(
+                n >= 1,
+                "scene {scene} owes at least one frame, got {n}: {specs:?}"
+            );
         }
         // Scene 1's key drew nothing, so its single frame is Override 3's:
         // app-driven, carrying no input ordinal.
         let scene1: Vec<&FrameSpec> = specs.iter().filter(|s| s.scene == 1).collect();
         assert!(
-            scene1.iter().all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
+            scene1
+                .iter()
+                .all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
             "an animated input's frames are measured, never input-driven: {scene1:?}"
         );
     }
@@ -763,7 +819,7 @@ hold_cs = 30
     #[test]
     fn an_animated_scene_measures_the_repaints_during_its_dwell() {
         let src = r#"
-launch = "stty -echo; printf 'READY'; read -n1 a; for i in 1 2 3 4; do printf '\rTICK%s' $i; sleep 0.15; done; sleep 5"
+launch = "sleep 0.5; stty -echo; printf 'READY'; read -n1 a; for i in 1 2 3 4; do printf '\rTICK%s' $i; sleep 0.15; done; sleep 5"
 cols = 30
 rows = 3
 startup_ms = 300
@@ -774,13 +830,19 @@ animated = true
 hold_cs = 60
 "#;
         let (marks, specs) = drive_and_assemble(src).expect("an animated scene must record");
-        assert_eq!(input_marks(&marks).len(), 1, "one input mark for the one key");
+        assert_eq!(
+            input_marks(&marks).len(),
+            1,
+            "one input mark for the one key"
+        );
         assert!(
             specs.len() >= 2,
             "the dwell spans several repaints, each of which earns a frame: {specs:?}"
         );
         assert!(
-            specs.iter().all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
+            specs
+                .iter()
+                .all(|s| matches!(s.kind, FrameKind::AppDriven) && s.input.is_none()),
             "an animated scene measures every frame — none is the authored settled one: {specs:?}"
         );
         let total: u32 = specs.iter().map(|s| s.hold_cs as u32).sum();
@@ -827,8 +889,14 @@ hold_cs = 20
             .process(0)
             .expect_err("an animated scene past the budget must not record silently")
             .to_string();
-        assert!(err.contains("max_capture_mb"), "should name the limit: {err}");
-        assert!(err.contains("raise max_capture_mb"), "should name the two knobs: {err}");
+        assert!(
+            err.contains("max_capture_mb"),
+            "should name the limit: {err}"
+        );
+        assert!(
+            err.contains("raise max_capture_mb"),
+            "should name the two knobs: {err}"
+        );
     }
 
     /// An empty `keys = []` scene sends nothing but still owes exactly one
@@ -836,7 +904,7 @@ hold_cs = 20
     #[test]
     fn an_empty_keys_scene_still_produces_one_mark() {
         let src = r#"
-launch = "printf 'HOLD ME'; sleep 5"
+launch = "sleep 0.5; printf 'HOLD ME'; printf ' READY'; sleep 5"
 cols = 30
 rows = 3
 startup_ms = 300
@@ -846,8 +914,16 @@ keys = []
 hold_cs = 20
 "#;
         let screens = settled_screens(src).unwrap();
-        assert_eq!(screens.len(), 1, "exactly one mark for a hold-the-screen scene");
-        assert!(screens[0].contains("HOLD ME"), "settled on: {:?}", screens[0]);
+        assert_eq!(
+            screens.len(),
+            1,
+            "exactly one mark for a hold-the-screen scene"
+        );
+        assert!(
+            screens[0].contains("HOLD ME"),
+            "settled on: {:?}",
+            screens[0]
+        );
     }
 }
 

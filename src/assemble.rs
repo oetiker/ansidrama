@@ -47,8 +47,15 @@ pub struct InputMark {
 
 pub enum Mark {
     Input(InputMark),
-    Card { scene: usize, hold_cs: u16 },
-    MouseMove { scene: usize, mouse: (u32, u32), hold_cs: u16 },
+    Card {
+        scene: usize,
+        hold_cs: u16,
+    },
+    MouseMove {
+        scene: usize,
+        mouse: (u32, u32),
+        hold_cs: u16,
+    },
 }
 
 fn cs(d: Duration, min_cs: u16) -> u16 {
@@ -88,7 +95,8 @@ pub fn assemble(
 
     let mut out = Vec::new();
     let mut input_ord = 0usize; // global index into next_input_t, across all scenes
-    let mut scene_input_ord: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    let mut scene_input_ord: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
     for m in marks {
         match m {
             Mark::Card { scene, hold_cs } => out.push(FrameSpec {
@@ -105,7 +113,11 @@ pub fn assemble(
             // kind would change the manifest, which is an out-of-repo
             // contract — the exception is documented in README's manifest
             // section instead.
-            Mark::MouseMove { scene, mouse, hold_cs } => out.push(FrameSpec {
+            Mark::MouseMove {
+                scene,
+                mouse,
+                hold_cs,
+            } => out.push(FrameSpec {
                 source: FrameSource::Reuse,
                 kind: FrameKind::AppDriven,
                 hold_cs: (*hold_cs).max(min_cs),
@@ -179,7 +191,11 @@ pub fn assemble(
                     let is_settled = idx == i.settled && !i.animated;
                     out.push(FrameSpec {
                         source: FrameSource::State(idx),
-                        kind: if is_settled { FrameKind::InputDriven } else { FrameKind::AppDriven },
+                        kind: if is_settled {
+                            FrameKind::InputDriven
+                        } else {
+                            FrameKind::AppDriven
+                        },
                         hold_cs: if is_settled {
                             i.authored_cs.max(min_cs)
                         } else {
@@ -279,7 +295,11 @@ mod tests {
         let f = assemble(&times, t0 + ms(310), &marks, 1);
         assert_eq!(f.len(), 3);
         assert!(f.iter().all(|s| matches!(s.kind, FrameKind::AppDriven)));
-        assert!(f.iter().all(|s| s.hold_cs == 10), "all measured: {:?}", f.iter().map(|s| s.hold_cs).collect::<Vec<_>>());
+        assert!(
+            f.iter().all(|s| s.hold_cs == 10),
+            "all measured: {:?}",
+            f.iter().map(|s| s.hold_cs).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -288,7 +308,11 @@ mod tests {
         let times = vec![t0 + ms(10)];
         let marks = vec![
             input(t0, 0, 28),
-            Mark::MouseMove { scene: 0, mouse: (5, 5), hold_cs: 4 },
+            Mark::MouseMove {
+                scene: 0,
+                mouse: (5, 5),
+                hold_cs: 4,
+            },
         ];
         let f = assemble(&times, t0 + ms(500), &marks, 1);
         assert_eq!(f.len(), 2);
@@ -302,7 +326,10 @@ mod tests {
         let t0 = Instant::now();
         let times = vec![t0 + ms(10)];
         let marks = vec![
-            Mark::Card { scene: 0, hold_cs: 200 },
+            Mark::Card {
+                scene: 0,
+                hold_cs: 200,
+            },
             input(t0, 0, 28),
         ];
         let f = assemble(&times, t0 + ms(500), &marks, 1);
@@ -330,7 +357,11 @@ mod tests {
         let times = vec![t0 + ms(10)];
         let marks = vec![input(t0, 0, 9), input(t0 + ms(500), 0, 28)];
         let f = assemble(&times, t0 + ms(900), &marks, 1);
-        assert_eq!(f.len(), 2, "every input owes exactly one input-driven frame");
+        assert_eq!(
+            f.len(),
+            2,
+            "every input owes exactly one input-driven frame"
+        );
         assert!(f.iter().all(|s| matches!(s.kind, FrameKind::InputDriven)));
         assert_eq!(f[0].hold_cs, 9);
         assert_eq!(f[1].hold_cs, 28);
@@ -355,7 +386,11 @@ mod tests {
             animated: true,
         })];
         let f = assemble(&times, t0 + ms(150), &marks, 1);
-        assert_eq!(f.len(), 1, "an animated input owes a frame even when nothing moved");
+        assert_eq!(
+            f.len(),
+            1,
+            "an animated input owes a frame even when nothing moved"
+        );
         assert!(matches!(f[0].kind, FrameKind::AppDriven));
         assert_eq!(f[0].hold_cs, 10, "150ms - 50ms = 100ms = 10cs");
         assert_eq!(f[0].input, None, "app-driven frames carry no input ordinal");
@@ -395,13 +430,24 @@ mod tests {
                 animated: false,
             }),
             // An app-driven (mouse-move) frame carries no input ordinal.
-            Mark::MouseMove { scene: 1, mouse: (1, 1), hold_cs: 3 },
+            Mark::MouseMove {
+                scene: 1,
+                mouse: (1, 1),
+                hold_cs: 3,
+            },
         ];
         let f = assemble(&times, t0 + ms(1500), &marks, 1);
         assert_eq!(f.len(), 4);
         assert_eq!(f[0].input, Some(0), "scene 0's first input");
         assert_eq!(f[1].input, Some(1), "scene 0's second input");
-        assert_eq!(f[2].input, Some(0), "scene 1's first input: ordinal restarts");
-        assert_eq!(f[3].input, None, "app-driven mouse-move frame carries no ordinal");
+        assert_eq!(
+            f[2].input,
+            Some(0),
+            "scene 1's first input: ordinal restarts"
+        );
+        assert_eq!(
+            f[3].input, None,
+            "app-driven mouse-move frame carries no ordinal"
+        );
     }
 }

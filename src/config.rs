@@ -457,9 +457,7 @@ mod await_tests {
     use super::*;
 
     fn cfg(scene: &str) -> RecordConfig {
-        let text = format!(
-            "launch = 'true'\ncols = 10\nrows = 4\n[[scene]]\n{scene}\n"
-        );
+        let text = format!("launch = 'true'\ncols = 10\nrows = 4\n[[scene]]\n{scene}\n");
         toml::from_str(&text).unwrap()
     }
 
@@ -495,7 +493,9 @@ mod await_tests {
         let text = "launch = 'true'\ncols = 10\nrows = 4\n[[scene]]\nkeys = ['t']\n\
                     await = { find = 'x', row = -1, await_ms = 8000 }\n";
         let e: Result<RecordConfig, _> = toml::from_str(text);
-        let err = e.err().expect("a typo inside the await table must not be dropped");
+        let err = e
+            .err()
+            .expect("a typo inside the await table must not be dropped");
         assert!(
             err.to_string().contains("await_ms"),
             "error should name the offending key: {err}"
@@ -522,7 +522,10 @@ mod await_tests {
         let c = cfg("keys = ['t']\nanimated = true\nawait = 'done'");
         let err = c.validate().unwrap_err().to_string();
         assert!(err.contains("scene 0"), "should name the scene: {err}");
-        assert!(err.contains("animated"), "should name the combination: {err}");
+        assert!(
+            err.contains("animated"),
+            "should name the combination: {err}"
+        );
     }
 
     #[test]
@@ -532,7 +535,10 @@ mod await_tests {
         let c: RecordConfig = toml::from_str(text).unwrap();
         let err = c.validate().unwrap_err().to_string();
         assert!(err.contains("scene 0"), "should name the scene: {err}");
-        assert!(err.contains("realtime"), "should name the combination: {err}");
+        assert!(
+            err.contains("realtime"),
+            "should name the combination: {err}"
+        );
     }
 
     #[test]
