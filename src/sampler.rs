@@ -1,9 +1,16 @@
 //! Continuous grid sampling: a thread that snapshots the screen, and the
 //! pending/committed rule that decides which snapshots are real states.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use anyhow::{bail, Result};
+
 use crate::grid::Cell;
+use crate::pattern::Pattern;
+use crate::term::ParserHandle;
 
 /// One screen the app actually held, and when it first appeared.
 pub struct State {
@@ -73,6 +80,12 @@ impl StateAccumulator {
     pub fn committed(&self) -> &[State] {
         &self.committed
     }
+
+    /// The newest screen, pending or committed — what "the screen right now" means.
+    pub fn newest(&self) -> Option<&State> {
+        self.pending.as_ref().or_else(|| self.committed.last())
+    }
+
     pub fn last_change(&self) -> Instant {
         self.last_change
     }
@@ -87,6 +100,216 @@ fn state_bytes(s: &State) -> usize {
         .iter()
         .map(|r| r.len() * std::mem::size_of::<Cell>() + std::mem::size_of::<Vec<Cell>>())
         .sum()
+}
+
+/// What ended a wait, and which state the capture should use.
+#[derive(Debug)]
+pub struct WaitOutcome {
+    pub state: usize,
+    /// The bound was reached rather than the screen settling. Not an error —
+    /// a deliberately animated screen never settles — but D reports it.
+    pub hit_cap: bool,
+}
+
+/// Samples the screen on its own thread so capture is never blocked by
+/// rendering, and nothing the app draws between inputs is missed.
+pub struct Sampler {
+    acc: Arc<(Mutex<StateAccumulator>, Condvar)>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    over_budget: Arc<AtomicBool>,
+    max_bytes: usize,
+    start: Instant,
+}
+
+impl Sampler {
+    pub fn start(
+        handle: ParserHandle,
+        sample: Duration,
+        persist: Duration,
+        max_bytes: usize,
+    ) -> Sampler {
+        let acc = Arc::new((Mutex::new(StateAccumulator::new(persist)), Condvar::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let over_budget = Arc::new(AtomicBool::new(false));
+
+        // Materialize one state synchronously, before the thread starts and
+        // before `start` returns. Without this, the sampler's own first
+        // observation — turning "nothing recorded yet" into a blank grid —
+        // races the caller's first `wait()`: if that race is lost, `wait()`
+        // sees its own startup bookkeeping as "the screen moved" and can
+        // settle on a screen the child has not drawn onto yet. Doing it here
+        // means `last_change` is already settled by the time any `wait()`
+        // call can capture its `base_change`.
+        let (grid, caret, mut last_gen) = handle.snapshot();
+        {
+            let (lock, _) = &*acc;
+            lock.lock().unwrap().observe(grid, caret, Instant::now());
+        }
+
+        let thread = {
+            let (acc, stop, over) = (Arc::clone(&acc), Arc::clone(&stop), Arc::clone(&over_budget));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let gen = handle.generation();
+                    let (lock, cvar) = &*acc;
+                    if gen != last_gen {
+                        // Something arrived: pay for the conversion, but do it
+                        // *before* taking the accumulator lock, and take the
+                        // timestamp together with the snapshot so it describes
+                        // the screen actually read.
+                        let (grid, caret, new_gen) = handle.snapshot();
+                        let now = Instant::now();
+                        last_gen = new_gen;
+                        let mut a = lock.lock().unwrap();
+                        a.observe(grid, caret, now);
+                        if a.bytes() > max_bytes {
+                            over.store(true, Ordering::Relaxed);
+                            cvar.notify_all();
+                            return;
+                        }
+                        cvar.notify_all();
+                    } else {
+                        // Nothing arrived: a pending state may still have
+                        // earned promotion, but that costs one guarded read,
+                        // never a grid clone.
+                        let now = Instant::now();
+                        let mut a = lock.lock().unwrap();
+                        a.tick(now);
+                        if a.bytes() > max_bytes {
+                            over.store(true, Ordering::Relaxed);
+                            cvar.notify_all();
+                            return;
+                        }
+                        cvar.notify_all();
+                    }
+                    std::thread::sleep(sample);
+                }
+            })
+        };
+        Sampler {
+            acc,
+            stop,
+            thread: Some(thread),
+            over_budget,
+            max_bytes,
+            start: Instant::now(),
+        }
+    }
+
+    pub fn states(&self) -> MutexGuard<'_, StateAccumulator> {
+        self.acc.0.lock().unwrap()
+    }
+
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+
+    /// Two phases: up to `change` for the screen to move at all, then until the
+    /// newest state has held for `stable` and matches `want`.
+    ///
+    /// Phase 1 is essential. Before the app reacts, the pre-input screen has
+    /// been unchanged for a long time, so stability alone is satisfied the
+    /// instant an input is sent. Measuring the grace on *grid changes* rather
+    /// than PTY bytes is what stops the previous input's still-draining output
+    /// from ending this wait *when that output does not change the screen*
+    /// (a color reset, a redundant redraw of what's already there, and so
+    /// on) — bytes alone would satisfy it, a grid comparison will not.
+    ///
+    /// It cannot stop output that genuinely repaints the screen: leftover
+    /// text from a previous input can settle and hold for `stable` before
+    /// the real reply arrives, and nothing about timing can tell the two
+    /// apart from here. That is what `want` is for — pin the pattern the
+    /// real reply must match, and a merely-plausible intermediate screen
+    /// cannot satisfy it.
+    pub fn wait(
+        &self,
+        want: Option<&Pattern>,
+        change: Duration,
+        stable: Duration,
+        timeout: Duration,
+    ) -> Result<WaitOutcome> {
+        let start = Instant::now();
+        let (lock, cvar) = &*self.acc;
+        let mut a = lock.lock().unwrap();
+        let base_change = a.last_change();
+        loop {
+            if self.over_budget.load(Ordering::Relaxed) {
+                let elapsed = self.start.elapsed();
+                bail!(
+                    "recording exceeded max_capture_mb = {} after {} ({} states)\n\
+                     raise max_capture_mb, or raise persist_ms to commit fewer states",
+                    self.max_bytes / (1024 * 1024),
+                    format_elapsed(elapsed),
+                    a.committed().len(),
+                );
+            }
+            let now = Instant::now();
+            let elapsed = now.duration_since(start);
+            let moved = a.last_change() > base_change;
+            let held = now.duration_since(a.last_change()) >= stable;
+            let grace_left = change.saturating_sub(elapsed);
+            let matched = match (want, a.newest()) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(p), Some(s)) => p.matches(&s.grid),
+            };
+
+            // Phase 1 is satisfied by any change, or by the grace expiring.
+            let phase1 = moved || grace_left.is_zero();
+            if phase1 && held && matched {
+                let idx = a
+                    .force_commit(now)
+                    .unwrap_or_else(|| a.committed().len().saturating_sub(1));
+                return Ok(WaitOutcome { state: idx, hit_cap: false });
+            }
+            if elapsed >= timeout {
+                if let Some(p) = want {
+                    let seen = a
+                        .newest()
+                        .map(|s| crate::pattern::screen_text(&s.grid))
+                        .unwrap_or_default();
+                    bail!(
+                        "await pattern {:?} never matched within {}ms\n--- last screen ---\n{seen}",
+                        p.source(),
+                        timeout.as_millis()
+                    );
+                }
+                let idx = a
+                    .force_commit(now)
+                    .unwrap_or_else(|| a.committed().len().saturating_sub(1));
+                return Ok(WaitOutcome { state: idx, hit_cap: true });
+            }
+            let nap = Duration::from_millis(2)
+                .min(timeout.saturating_sub(elapsed))
+                .max(Duration::from_millis(1));
+            a = cvar.wait_timeout(a, nap).unwrap().0;
+        }
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Format a duration as e.g. `4m12s`, or `12s` under a minute, for the
+/// memory-budget error message.
+fn format_elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    let (m, s) = (secs / 60, secs % 60);
+    if m > 0 {
+        format!("{m}m{s}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +401,185 @@ mod acc_tests {
         a.tick(t0 + ms(50));
         assert_eq!(a.committed().len(), 1);
         assert_eq!(a.committed()[0].t, t0, "timestamp is when it first appeared");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pty_tests {
+    use super::*;
+    use crate::pattern::Pattern;
+    use crate::term::Term;
+    use std::collections::BTreeMap;
+
+    fn sampler_for(term: &Term) -> Sampler {
+        Sampler::start(
+            term.handle(),
+            Duration::from_millis(5),
+            Duration::from_millis(40),
+            256 * 1024 * 1024,
+        )
+    }
+
+    /// The scenario 0.2.0 fixed with `react_ms`: the app goes quiet for longer
+    /// than `stable` *before* it answers. The pre-input screen is already
+    /// stable, so stability alone would return it.
+    #[test]
+    fn waits_for_a_late_first_reply() {
+        let env = BTreeMap::new();
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; read -n1 k; sleep 0.6; printf 'LATE'; sleep 2",
+            &env,
+        )
+        .unwrap();
+        let s = sampler_for(&term);
+        let ready = Pattern::new("READY", None).unwrap();
+        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        term.send_key("x").unwrap();
+        let out = s
+            .wait(
+                None,
+                Duration::from_millis(2000), // change grace
+                Duration::from_millis(40),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        let acc = s.states();
+        let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
+        assert!(text.contains("LATE"), "captured before the app answered: {text:?}");
+    }
+
+    /// The disarm bug: bytes still draining from the *previous* input must not
+    /// satisfy this input's grace. The old bug was byte-based — `read_loop`
+    /// cleared `awaiting_reply` on *any byte* — so an SGR reset (`\033[0m`) is
+    /// the faithful analogue: it is real output, it bumps the generation
+    /// counter, but it touches no cell, so the grid comparison sees no
+    /// change and `last_change` does not move. If phase 1 were keyed off
+    /// bytes or the generation counter instead of grid changes, this test
+    /// would fail — the wait would end at ~390ms holding "READY".
+    #[test]
+    fn is_not_disarmed_by_the_previous_inputs_output() {
+        let env = BTreeMap::new();
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; \
+             read -n1 a; (sleep 0.4; printf '\\033[0m') & \
+             read -n1 b; sleep 1.2; printf 'LATE'; sleep 3",
+            &env,
+        )
+        .unwrap();
+        let s = sampler_for(&term);
+        let ready = Pattern::new("READY", None).unwrap();
+        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        term.send_key("a").unwrap();
+        let _ = s.wait(None, Duration::from_millis(50), Duration::from_millis(40), Duration::from_millis(200));
+        term.send_key("b").unwrap();
+        let out = s
+            .wait(None, Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        let acc = s.states();
+        let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
+        assert!(text.contains("LATE"), "previous input's output ended the wait: {text:?}");
+    }
+
+    /// The residual case grid-comparison genuinely cannot decide: the
+    /// previous input's leftover output really does repaint the screen
+    /// (`TRAIL`), settles, and holds for `stable` long before the real reply
+    /// (`LATE`) arrives. A plain `wait(None, ...)` cannot tell these apart —
+    /// that is Bug B, not fixable by any timing rule. `await` is the escape
+    /// hatch: pinning the expected pattern means a merely-plausible
+    /// intermediate screen can never satisfy the wait, so the result is
+    /// never a silently wrong frame.
+    #[test]
+    fn await_survives_a_previous_inputs_repaint() {
+        let env = BTreeMap::new();
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; \
+             read -n1 a; (sleep 0.4; printf 'TRAIL') & \
+             read -n1 b; sleep 1.2; printf 'LATE'; sleep 3",
+            &env,
+        )
+        .unwrap();
+        let s = sampler_for(&term);
+        let ready = Pattern::new("READY", None).unwrap();
+        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        term.send_key("a").unwrap();
+        let _ = s.wait(None, Duration::from_millis(50), Duration::from_millis(40), Duration::from_millis(200));
+        term.send_key("b").unwrap();
+        let late = Pattern::new("LATE", None).unwrap();
+        let out = s
+            .wait(Some(&late), Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        let acc = s.states();
+        let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
+        assert!(text.contains("LATE"), "TRAIL was mistaken for the real reply: {text:?}");
+    }
+
+    /// An `await` that matches returns promptly and does not spend the timeout.
+    #[test]
+    fn await_returns_on_match() {
+        let env = BTreeMap::new();
+        let term = Term::spawn(20, 3, "printf 'HELLO'; sleep 3", &env).unwrap();
+        let s = sampler_for(&term);
+        let p = Pattern::new("HELLO", Some(0)).unwrap();
+        let started = Instant::now();
+        let out = s
+            .wait(Some(&p), Duration::from_millis(500), Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+        assert!(!out.hit_cap);
+        assert!(started.elapsed() < Duration::from_secs(2), "spent too long: {:?}", started.elapsed());
+    }
+
+    /// An `await` that never matches is an error naming the pattern — never a
+    /// silently wrong frame.
+    #[test]
+    fn await_that_never_matches_is_an_error() {
+        let env = BTreeMap::new();
+        let term = Term::spawn(20, 3, "printf 'HELLO'; sleep 3", &env).unwrap();
+        let s = sampler_for(&term);
+        let p = Pattern::new("GOODBYE", None).unwrap();
+        let err = s
+            .wait(Some(&p), Duration::from_millis(100), Duration::from_millis(40), Duration::from_millis(400))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("GOODBYE"), "error should name the pattern: {err}");
+    }
+
+    /// An input that draws nothing costs exactly the grace, then returns
+    /// normally — reaching the cap is not an error.
+    #[test]
+    fn an_input_that_draws_nothing_returns_after_the_grace() {
+        let env = BTreeMap::new();
+        let term = Term::spawn(20, 3, "printf 'IDLE'; sleep 3", &env).unwrap();
+        let s = sampler_for(&term);
+        s.wait(None, Duration::from_millis(300), Duration::from_millis(40), Duration::from_secs(2))
+            .unwrap();
+        // Second wait: nothing changes at all.
+        let started = Instant::now();
+        let out = s
+            .wait(None, Duration::from_millis(150), Duration::from_millis(40), Duration::from_millis(600))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(!out.hit_cap, "grace expiring then a stable screen is a normal return");
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "must not return before the grace has been paid: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "must not burn the whole timeout, generous headroom for a loaded machine: {elapsed:?}"
+        );
     }
 }

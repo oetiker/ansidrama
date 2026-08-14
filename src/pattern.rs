@@ -22,13 +22,14 @@ pub fn screen_text(grid: &[Vec<Cell>]) -> String {
 pub struct Pattern {
     re: Regex,
     row: Option<i32>,
+    source: String,
 }
 
 impl Pattern {
     pub fn new(find: &str, row: Option<i32>) -> Result<Pattern> {
         let re = Regex::new(find)
             .with_context(|| format!("compile await pattern {find:?}"))?;
-        Ok(Pattern { re, row })
+        Ok(Pattern { re, row, source: find.to_string() })
     }
 
     pub fn matches(&self, grid: &[Vec<Cell>]) -> bool {
@@ -46,6 +47,11 @@ impl Pattern {
 
     pub fn row(&self) -> Option<i32> {
         self.row
+    }
+
+    /// The pattern as written, for error messages.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 }
 
