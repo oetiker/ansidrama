@@ -28,9 +28,12 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn new(find: &str, row: Option<i32>) -> Result<Pattern> {
-        let re = Regex::new(find)
-            .with_context(|| format!("compile await pattern {find:?}"))?;
-        Ok(Pattern { re, row, source: find.to_string() })
+        let re = Regex::new(find).with_context(|| format!("compile await pattern {find:?}"))?;
+        Ok(Pattern {
+            re,
+            row,
+            source: find.to_string(),
+        })
     }
 
     pub fn matches(&self, grid: &[Vec<Cell>]) -> bool {
@@ -69,7 +72,12 @@ mod tests {
     use super::*;
 
     fn cell(ch: char) -> Cell {
-        Cell { ch, fg: (0, 0, 0), bg: (0, 0, 0), bold: false }
+        Cell {
+            ch,
+            fg: (0, 0, 0),
+            bg: (0, 0, 0),
+            bold: false,
+        }
     }
 
     /// Build a grid from lines, padded to `cols`.
