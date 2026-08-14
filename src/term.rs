@@ -75,6 +75,9 @@ struct Shared {
     last_send: Instant,
     awaiting_reply: bool,
     eof: bool,
+    /// Bumped on every `parser.process`. Lets a reader skip grid conversion
+    /// when nothing has arrived since it last looked.
+    generation: u64,
     /// Diagnostics: bytes read, and reads performed, since the last input was
     /// sent. A settle that returns with `reads_since_send == 0` captured a
     /// screen the child had not yet answered onto.
@@ -117,6 +120,7 @@ fn read_loop(mut master: std::fs::File, shared: Arc<(Mutex<Shared>, Condvar)>) {
                 }
                 let mut s = lock.lock().unwrap();
                 s.parser.process(&buf[..n]);
+                s.generation += 1;
                 s.last_activity = Instant::now();
                 s.awaiting_reply = false;
                 s.bytes_since_send += n as u64;
@@ -200,6 +204,7 @@ impl Term {
                 last_send: Instant::now(),
                 awaiting_reply: false,
                 eof: false,
+                generation: 0,
                 bytes_since_send: 0,
                 reads_since_send: 0,
             }),
@@ -308,6 +313,48 @@ impl Term {
     pub fn send_key(&mut self, name: &str) -> Result<()> {
         let bytes = crate::keys::key_bytes(name)?;
         self.send_bytes(&bytes)
+    }
+
+    pub fn handle(&self) -> ParserHandle {
+        ParserHandle {
+            shared: Arc::clone(&self.shared),
+            rows: self.rows,
+            cols: self.cols,
+        }
+    }
+}
+
+/// A cloneable read-only view of the parser, for the sampler thread. It
+/// deliberately does not expose the child or the master fd: sampling must never
+/// be able to drive the terminal.
+#[derive(Clone)]
+pub struct ParserHandle {
+    shared: Arc<(Mutex<Shared>, Condvar)>,
+    rows: u16,
+    cols: u16,
+}
+
+impl ParserHandle {
+    pub fn generation(&self) -> u64 {
+        let (lock, _) = &*self.shared;
+        lock.lock().unwrap().generation
+    }
+
+    /// Grid, caret and generation from a single lock acquisition, so the three
+    /// can never disagree about which screen they describe.
+    pub fn snapshot(&self) -> (Vec<Vec<Cell>>, Option<(u32, u32)>, u64) {
+        let (lock, _) = &*self.shared;
+        let s = lock.lock().unwrap();
+        (
+            screen_to_grid(s.parser.screen(), self.rows, self.cols),
+            screen_caret(s.parser.screen()),
+            s.generation,
+        )
+    }
+
+    pub fn is_eof(&self) -> bool {
+        let (lock, _) = &*self.shared;
+        lock.lock().unwrap().eof
     }
 }
 
@@ -508,5 +555,24 @@ mod pty_tests {
         term.send_key("x").unwrap();
         let row0 = wait_for_row0(&mut term, "got:x");
         assert!(row0.contains("got:x"), "row0 = {row0:?}");
+    }
+
+    /// The generation counter must advance only when the child actually writes,
+    /// so the sampler can skip grid conversion on an idle screen.
+    #[test]
+    fn generation_advances_only_on_output() {
+        let env = BTreeMap::new();
+        let mut term = Term::spawn(20, 3, "printf 'READY'; sleep 2", &env).unwrap();
+        let h = term.handle();
+        let _ = wait_for_row0(&mut term, "READY");
+
+        let (grid, _caret, g1) = h.snapshot();
+        let row0: String = grid[0].iter().map(|c| c.ch).collect();
+        assert!(row0.contains("READY"), "row0 = {row0:?}");
+        assert!(g1 > 0, "generation should have advanced past 0");
+
+        // Nothing more is written for a while: the counter must hold still.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(h.generation(), g1, "generation moved with no output");
     }
 }
