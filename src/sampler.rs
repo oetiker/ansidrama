@@ -43,12 +43,15 @@ impl StateAccumulator {
     }
 
     pub fn observe(&mut self, grid: Vec<Vec<Cell>>, caret: Option<(u32, u32)>, now: Instant) {
-        let newest = self
-            .pending
-            .as_ref()
-            .map(|s| &s.grid)
-            .or_else(|| self.committed.last().map(|s| &s.grid));
-        if newest != Some(&grid) {
+        let newest = self.pending.as_ref().or_else(|| self.committed.last());
+        // A "screen" is grid *and* caret together — a plain space keystroke
+        // overwrites a blank cell with a blank cell, leaving the grid
+        // byte-identical while only the caret moves. Comparing the grid alone
+        // would call that "unchanged" and let the caret go stale in the
+        // committed state, drawing the cursor one cell behind where the app
+        // actually put it.
+        let unchanged = newest.is_some_and(|s| s.grid == grid && s.caret == caret);
+        if !unchanged {
             // A genuinely new screen. Whatever was pending never persisted.
             self.pending = Some(State { grid, caret, t: now });
             self.last_change = now;
@@ -465,6 +468,32 @@ mod acc_tests {
         assert!(a.bytes() > 0, "a committed state must count toward the memory bound");
     }
 
+    /// A plain space overwrites a blank cell with a blank cell: the grid is
+    /// byte-identical before and after, and only the caret moves. If `observe`
+    /// compared the grid alone it would call this "unchanged" and never
+    /// record the new caret position — this is the regression guard for
+    /// exactly that bug (found by the capture regression gate: HEAD drew the
+    /// block cursor one cell behind the app after a bare-space keystroke).
+    #[test]
+    fn a_caret_only_change_is_a_new_state() {
+        let t0 = Instant::now();
+        let mut a = StateAccumulator::new(ms(40));
+        a.observe(g('a'), Some((0, 0)), t0);
+        a.observe(g('a'), Some((1, 0)), t0 + ms(10)); // same grid, caret moved
+        assert_eq!(
+            a.last_change(),
+            t0 + ms(10),
+            "a caret-only change must still count as a change"
+        );
+        a.observe(g('a'), Some((1, 0)), t0 + ms(60));
+        assert_eq!(a.committed().len(), 1);
+        assert_eq!(
+            a.committed()[0].caret,
+            Some((1, 0)),
+            "the committed state must carry the caret's new position, not the stale one"
+        );
+    }
+
     #[test]
     fn tick_promotes_a_persisted_state_without_a_grid() {
         let t0 = Instant::now();
@@ -561,6 +590,39 @@ mod pty_tests {
         let acc = s.states();
         let text = crate::pattern::screen_text(&acc.committed()[out.state].grid);
         assert!(text.contains("LATE"), "previous input's output ended the wait: {text:?}");
+    }
+
+    /// Secondary benefit of `observe` comparing caret alongside grid (the fix
+    /// for the regression-gate bug above `a_caret_only_change_is_a_new_state`
+    /// in `acc_tests`): a reply that only moves the cursor — a cursor-forward
+    /// escape, no glyph touched — now satisfies phase 1's `moved` check like
+    /// any other real change, instead of always burning the full `change`
+    /// grace as if the app hadn't answered yet.
+    #[test]
+    fn a_caret_only_reply_ends_phase_one_promptly() {
+        let env = BTreeMap::new();
+        let mut term = Term::spawn(
+            20,
+            3,
+            "stty -echo; printf 'READY'; read -n1 k; sleep 0.05; printf '\\033[3C'; sleep 3",
+            &env,
+        )
+        .unwrap();
+        let s = sampler_for(&term);
+        let ready = Pattern::new("READY", None).unwrap();
+        s.wait(Some(&ready), Duration::ZERO, Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+
+        term.send_key("k").unwrap();
+        let started = Instant::now();
+        s.wait(None, Duration::from_millis(2000), Duration::from_millis(40), Duration::from_secs(5))
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "a caret-only change should end phase 1 promptly instead of burning \
+             the full 2000ms grace: {elapsed:?}"
+        );
     }
 
     /// The residual case grid-comparison genuinely cannot decide: the

@@ -19,8 +19,14 @@ app-driven path. Those rules are covered by the `assemble` unit tests.
 
 ## Run log
 
-**2026-08-14, against `2e5195f` (v0.2.0) vs HEAD (`0324580`,
-`worktree-capture-core-await`), subject `demo/hello.toml`.**
+This gate has caught a real bug once already — see Run 1 below. Keep both
+entries: a gate whose history shows it catching something real is worth
+running again; one that has only ever reported success is not.
+
+### Run 1 — 2026-08-14, found a bug
+
+**Against `2e5195f` (v0.2.0) vs HEAD at `0324580`
+(`worktree-capture-core-await`, pre-fix), subject `demo/hello.toml`.**
 
 Both binaries built `--release` from the same repository (only the config's
 timing keys differ, so fonts/chrome/dimensions are identical by
@@ -43,7 +49,7 @@ Commands:
 
 ```sh
 ansidrama-0.2.0 record hello-old.toml --dump-png out-old/
-ansidrama-head  record hello-new.toml --dump-png out-new/
+ansidrama-head  record hello-new.toml --dump-png out-new-buggy-run1/
 ```
 
 Frame counts: **59 frames on both sides** (0.2.0's own log: `scene 00 → 1
@@ -80,23 +86,43 @@ artifacts left of the "correct" cursor position; original pairs and
 ImageMagick diffs are at:
 
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-old/`
-- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new/`
+- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-buggy-run1/`
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/diff0007.png`,
   `diff0033.png`, `diff0038.png`
 
-**Read of the finding, not a fix:** a plain space keystroke moves the
-terminal's caret but produces no visible change to the grid's cell contents
-(a blank cell before and after looks the same). If the new sampler's
-stability/commit logic keys off grid-cell equality rather than caret
-position, a space-only input could satisfy "nothing changed" and get
-captured a sample-tick early, before the caret has advanced — which matches
-the symptom exactly (content identical, caret one cell behind) and would
-explain why it is specific to space and to no other character in this
-script. This is a plausible mechanism, not a confirmed root cause — it needs
-someone to trace `StateAccumulator`/`Sampler`'s change detection
-(`src/sampler.rs`) against `caret` to confirm before deciding whether it's a
-real (very minor, one-column, one-frame-in-many) regression or intentional
-behavior worth accepting.
+**Root cause, confirmed:** `StateAccumulator::observe` (`src/sampler.rs`)
+compared only the grid when deciding whether a new sample is "the same
+screen" as the newest known state. A plain space overwrites a blank cell
+with a blank cell — grid byte-identical, only the caret moves — so `observe`
+called it unchanged and the committed state kept its stale caret. Fixed by
+comparing grid *and* caret together, matching the design spec's own wording
+for this step (`docs/superpowers/specs/2026-08-14-capture-core-await-design.md`):
+*"Convert grid + caret. If equal to the newest known state, do nothing."* —
+the implementation plan's Task 3 code compared grids only, a defect that
+survived three reviews before this gate caught it.
+Regression guard: `sampler::acc_tests::a_caret_only_change_is_a_new_state`.
+As a secondary benefit, phase 1's `moved` check (keyed off the same
+`last_change`) now also fires promptly on a caret-only reply instead of
+always burning the full `change_ms` grace; guarded by
+`sampler::pty_tests::a_caret_only_reply_ends_phase_one_promptly`.
 
-Frame counts, the assembled scene structure, and every non-space keystroke's
-result are otherwise identical between 0.2.0 and HEAD.
+### Run 2 — 2026-08-14, after the fix
+
+Same subject, same configs, same 0.2.0 binary; HEAD rebuilt at the commit
+carrying the `observe` fix above.
+
+```sh
+ansidrama-0.2.0 record hello-old.toml --dump-png out-old/
+ansidrama-head  record hello-new.toml --dump-png out-new-fixed-run2/
+```
+
+Frame counts: 59 on both sides again (HEAD's `manifest.tsv`: 59 rows, all
+`input-driven`/`card`, no `app-driven`).
+
+Comparison: **59/59 byte-identical. No output from the `cmp` loop.**
+
+Artifacts:
+
+- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-old/`
+- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-buggy-run1/` (Run 1's HEAD output, kept for reference)
+- `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-fixed-run2/` (Run 2's HEAD output — the clean run)
