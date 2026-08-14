@@ -7,30 +7,50 @@ Scope: sub-project **B-core + A** of the capture redesign
 ## Why
 
 `record` decides when an app has finished responding by watching the PTY go
-quiet. That decision is undecidable from timing alone, and every bug in the
-capture path has been a wrong answer to it:
+quiet, then captures one frame. That decision is undecidable from timing alone:
+a quiet PTY reads the same whether the app has finished drawing or has not
+started. Worse, **capture happens once per input, at a moment chosen by that
+heuristic** — so when it fires early, the state the app reached is lost for
+good, not merely mistimed.
 
-- **0.2.0's late-first-reply bug** — a quiet PTY reads the same whether the app
-  has finished drawing or has not started. Fixed by `react_ms`, a floor on the
-  wait for the first byte.
-- **The disarm bug** (found 2026-08-13, test `settle_is_not_disarmed_by_the_previous_inputs_output`)
-  — `read_loop` clears `awaiting_reply` on *any* byte, so output still draining
-  from the *previous* input satisfies the react window. With `react_ms = 2000`,
-  `settle` returned after 750ms on the previous key's output. `react_ms` cannot
-  help: it is not waited out, it is satisfied.
-- **The mdmost theme frame** (`docs/mdmost-theme-capture-findings.md`) — a
-  recording that held a dark screen under a `theme: light` status bar. Not
-  reproduced locally in 7 runs; still undiagnosed.
+This design changes three things that follow from that:
 
-The common cause is architectural, not a specific timing constant: **capture
-happens once per input, at a moment chosen by a heuristic.** If the heuristic
-fires early, the state the app reached is lost for good.
+1. **Recording gets much faster.** Today every input costs a full `settle_ms`
+   window regardless of how fast the app answered. Instrumenting the mdmost tour
+   (`ANSIDRAMA_TRACE=1`, 254 waits) showed the app answering in **0–15ms** and
+   the recorder then waiting out the remaining ~300ms every time — about **76
+   seconds of dead air** in one recording. Stability-based pacing at 40ms cuts
+   that to roughly 10 seconds.
+2. **Being early stops being fatal.** Continuous sampling means a state the app
+   reached is never lost; at worst it appears a beat later than intended.
+3. **Completion can be declared instead of guessed.** `await` lets the script
+   author say what the finished screen looks like, and a declared expectation
+   that fails **aborts the run** rather than silently writing a bad frame into
+   the output.
 
-This design removes the guess in two ways. Continuous sampling means a state the
-app reached is *never lost* — at worst it appears a beat later than intended, so
-being early stops being fatal. And `await` lets the script author *declare* what
-completion looks like, replacing the guess with a fact for any scene that names
-its result.
+Point 3 matters most in practice. Today a wrong frame is silent — the only way
+to find one is to dump every PNG and look, which is how the investigation below
+proceeded.
+
+### The investigation that exposed this
+
+The architecture's limits surfaced while chasing a reported bad frame in
+mdmost's demo (`docs/mdmost-theme-capture-findings.md`): a recording that held a
+dark screen under a `theme: light` status bar for 2.8 seconds.
+
+That investigation found a genuine, reproducible defect in the current design —
+**the disarm bug** (test `settle_is_not_disarmed_by_the_previous_inputs_output`):
+`read_loop` clears `awaiting_reply` on *any* byte, so output still draining from
+the *previous* input satisfies the react window that `89e5ba3` added. With
+`react_ms = 2000`, `settle` returned after 750ms on the previous key's output.
+Raising `react_ms` cannot help, because react is not waited out — it is
+satisfied.
+
+**The reported mdmost frame itself was never reproduced** (7 runs, including 3
+on an unfixed binary and one at a 5× narrower settle window) and remains
+undiagnosed. It is *not* the justification for this design, and this design does
+not claim to fix it — see Limitations. It is the reason the capture path got
+read closely enough to find the disarm bug and to measure the dead air above.
 
 ## Objectives
 
@@ -90,7 +110,19 @@ Owns the sampling thread and the state log. Every `sample_ms`:
 2. Convert grid + caret. If equal to the newest known state, do nothing.
 3. Otherwise this is a new state: it becomes **pending**, timestamped.
 
-A pending state is **committed** to the log once it has survived `persist_ms`.
+A pending state is **committed** to the log when either:
+
+- it has survived `persist_ms`, **or**
+- it is the state a `wait` returned as an input's settled result.
+
+The second condition is load-bearing, not a detail. Without it, a config with
+`stable_ms = 40` and `persist_ms = 200` — legitimate, since the two knobs are
+documented as independently tunable — lets `wait` return at 40ms on a state that
+is then superseded at 100ms and never committed, leaving assembly with **no
+frame at all** for that input and nowhere to put its authored duration. With it,
+**every input has exactly one input-driven frame** as a structural invariant
+rather than as a consequence of the two defaults happening to be equal.
+
 Pending state still drives the stability timer, so flicker resets it correctly.
 
 This applies the assembly filter at capture time and is what bounds memory (see
@@ -121,6 +153,28 @@ clock, no rendering — this is where the interesting rules live and where they
 are unit-tested. `raster.rs` and `encode.rs` are unchanged, and only frames that
 survive assembly are ever rasterised.
 
+### Frame manifest
+
+`record` prints `scene 58 -> 907 frames total`, and that mapping is load-bearing
+outside this repo: mdmost's `docs/maintainer-notes.md` bisect procedure depends
+on deriving a frame index from the running total, and it is how the frame in the
+investigation above was located. App-driven frames break it, because a scene no
+longer contributes a predictable count.
+
+So `--dump-png` also writes a manifest (TSV) beside the frames:
+
+```
+frame	scene	input	kind		hold_cs
+0905	57	4	input-driven	280
+0906	58	0	input-driven	280
+0907	58	-	app-driven	41
+```
+
+This makes the bisect procedure better than it is today — "the input-driven
+frame for scene 58" becomes a lookup rather than arithmetic across scenes — and
+it carries exactly the data the regression gate needs, so the two share one
+mechanism.
+
 ## Config schema
 
 Breaking changes are acceptable; ansidrama is early in its cycle and there is no
@@ -137,7 +191,7 @@ wait_cap_ms = 3000   # bound when a scene has no `await`
 await_ms    = 5000   # default `await` timeout
 realtime    = false  # whole recording plays at measured time
 startup_ms  = 900    # unchanged: floor before the first capture
-max_states  = 20000  # backstop; exceeding it is an error
+max_capture_mb = 256 # backstop on accumulated grid memory; exceeding it errors
 ```
 
 **Removed:** `settle_ms`, `react_ms`.
@@ -187,8 +241,21 @@ genuinely draws nothing.
 With `await` set, phase 1 is subsumed: waiting for the match implies waiting for
 a change.
 
-`await` applies only to a scene's **final** input. Intermediate keys in
-`keys = ["F", "F", "F"]` use stability alone.
+`await` applies only to a scene's **final** input — the last thing actually sent
+to the app. Intermediate sends use stability alone. Per action type:
+
+| Action | Final input |
+|---|---|
+| `keys` / `text` | the last key or character |
+| `click` | the **release** (mouse-up) |
+| `drag` | the **release**, after the motion steps |
+| `scroll` | the last wheel sequence |
+
+The app sees the mouse-up, so it is genuinely the last input; no separate rule
+is needed. An app that acts on *press* and ignores release still works, because
+phase 2 matches `await` against the **current** screen — already matching, and
+stable — rather than requiring the change to occur after the final send. The
+only cost in that case is a wasted `change_ms` in phase 1.
 
 Mouse-move frames (pointer animation between positions) send nothing and do not
 wait at all; they reuse the current state and take `move_cs`.
@@ -254,7 +321,8 @@ Card scenes are synthetic and emitted in scene order, unchanged.
   warning on every run would train the author to ignore the signal.
 - **Sampler thread death or poisoned lock** — surfaced as an error, never a
   hang.
-- **`max_states` exceeded** — error naming the limit and the config key.
+- **`max_capture_mb` exceeded** — error naming the limit, the elapsed time, and
+  the two knobs that resolve it.
 
 ## Resource bounds
 
@@ -265,7 +333,17 @@ state (100x30 cells): **4MB/s**, so a two-minute `animated` recording would be
 The pending/committed split solves this: only states surviving `persist_ms` are
 committed, bounding the log to ~25 states/second (~1MB/s). This costs nothing,
 because a state that did not persist was going to be dropped at assembly anyway.
-`max_states` backstops the pathological case.
+
+`max_capture_mb` backstops the pathological case, and is measured in **bytes of
+accumulated grid, not a state count**. A count-based limit expresses the bound
+in a unit nobody reasons in and silently changes meaning with grid size — a
+200x60 recording is 4x the per-state cost, so the same count quadruples the real
+ceiling. Exceeding it is an error naming what actually helps:
+
+```
+recording exceeded max_capture_mb = 256 after 4m12s (6400 states)
+raise max_capture_mb, or raise persist_ms to commit fewer states
+```
 
 ## Testing
 
@@ -291,10 +369,22 @@ because a state that did not persist was going to be dropped at assembly anyway.
 
 **Regression gate:**
 
-Re-record the mdmost tour and diff frame-by-frame against the 0.2.0 output.
-Expectation: pixel-identical except where 0.2.0 was wrong. This is why B-core
-holds the output shape at one input-driven frame per input — if frame count and
-timing shifted at the same time, the diff would be uninterpretable.
+Re-record the mdmost tour with `persist_ms` pinned high enough that no
+app-driven frame can form, so the output shape is identical to 0.2.0's by
+construction, and diff frame-by-frame. Expectation: **pixel-identical**, except
+where 0.2.0 was wrong.
+
+A frame-index diff against the *default* configuration would not work. Today's
+~300ms dwell absorbs anything the app does within it into a single frame; under
+the new design a change at +50ms becomes a committed state and therefore an
+extra frame. Inserted frames desynchronise every subsequent index, so the diff
+becomes unreadable exactly where it matters. Pinning `persist_ms` removes that
+variable and makes the comparison exact.
+
+**What this gate does not cover:** it passes without exercising the default
+configuration, so the app-driven path gets no end-to-end coverage. Its rules are
+covered directly by the assembly unit tests above — which is why that is
+acceptable, but the limit should be understood rather than assumed away.
 
 ## Limitations
 
@@ -315,7 +405,10 @@ timing shifted at the same time, the diff would be uninterpretable.
 For the mdmost tour: delete `settle_ms`, and optionally add `await` to the theme
 scene. Nothing else changes.
 
-## Debug facilities (already in the tree)
+## Debug facilities
+
+Added during the investigation and **not yet committed** at the time of writing
+(`M src/term.rs`). They need committing independently of this work:
 
 - `ANSIDRAMA_DUMP_PTY=<path>` — tees every byte the child writes, so a suspect
   repaint can be replayed through the parser offline.
