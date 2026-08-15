@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+### Fixed
+
+## 0.4.0 - 2026-08-15
+
+### New
+
 - **`record`**: `move = { x, y }` — hover the pointer at a cell and hold it there, with no button ever pressed. Like any other scene it carries `hold_cs` and can carry an `await`, so a hover that lands on nothing aborts the run instead of recording a frame where nothing is lit.
 
 ### Changed
