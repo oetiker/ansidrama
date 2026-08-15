@@ -216,12 +216,40 @@ impl<'a> Recorder<'a> {
         self.marks.push(Mark::Card { scene, hold_cs });
     }
 
-    /// Animate the pointer from its last position to `target` over the current
-    /// (unchanged) screen — one frame per cell. Nothing is sent to the app and
-    /// nothing is waited for. Leaves `last_mouse` set.
-    fn move_to(&mut self, scene: usize, target: (u32, u32), move_cs: u16) {
-        if let Some(from) = self.last_mouse {
-            for mouse in line_cells(from, target) {
+    /// Animate the pointer from its last position to `target` — one frame per
+    /// cell — and, if the application is listening for motion, *report* every
+    /// step of it.
+    ///
+    /// The two halves of that are gated on [`Term::mouse_mode`]:
+    ///
+    /// - **`AnyMotion` (`?1003h`)** — the application asked to hear about a hand
+    ///   crossing its window, so each cell sends a bare-motion report and is
+    ///   captured like a drag's steps are. Capturing matters: the repaint a
+    ///   hover provokes is the entire reason to send the report, and a step that
+    ///   sent without waiting would race the highlight it just asked for.
+    /// - **anything else** — what this has always done: frames over the current
+    ///   (unchanged) screen, no bytes, no waiting. An application that never
+    ///   asked for motion must not be handed any.
+    ///
+    /// Leaves `last_mouse` set either way.
+    fn move_to(&mut self, scene: usize, target: (u32, u32), move_cs: u16) -> Result<()> {
+        let reports = self.term.mouse_mode() == vt100::MouseProtocolMode::AnyMotion;
+        // With no previous position there is no path to walk — but the pointer
+        // must still *arrive*, or the first hover of a recording lights nothing
+        // because the application was never told where the cursor is. One report
+        // at the target is that arrival. With motion off there is nothing to
+        // arrive at and nothing to draw, so the glide stays empty as before.
+        let path = match self.last_mouse {
+            Some(from) => line_cells(from, target),
+            None if reports => vec![target],
+            None => Vec::new(),
+        };
+        for mouse in path {
+            if reports {
+                let t = Instant::now();
+                self.term.send_bytes(sgr_hover(mouse).as_bytes())?;
+                self.capture(scene, t, move_cs, Some(mouse), false)?;
+            } else {
                 self.marks.push(Mark::MouseMove {
                     scene,
                     mouse,
@@ -230,6 +258,7 @@ impl<'a> Recorder<'a> {
             }
         }
         self.last_mouse = Some(target);
+        Ok(())
     }
 
     fn process(&mut self, i: usize) -> Result<()> {
@@ -284,7 +313,7 @@ impl<'a> Recorder<'a> {
             Action::Click(c) => {
                 let at_cell = (c.x, c.y);
                 let b = c.button;
-                self.move_to(i, at_cell, move_cs);
+                self.move_to(i, at_cell, move_cs)?;
                 let t = Instant::now();
                 self.term.send_bytes(sgr(b, at_cell, true).as_bytes())?; // press
                 self.capture(i, t, move_cs, Some(at_cell), false)?;
@@ -299,7 +328,7 @@ impl<'a> Recorder<'a> {
                 let from = (d.from[0], d.from[1]);
                 let to = (d.to[0], d.to[1]);
                 let b = d.button;
-                self.move_to(i, from, move_cs);
+                self.move_to(i, from, move_cs)?;
                 let t = Instant::now();
                 self.term.send_bytes(sgr(b, from, true).as_bytes())?; // press
                 self.capture(i, t, move_cs, Some(from), false)?;
@@ -314,9 +343,22 @@ impl<'a> Recorder<'a> {
                 self.last_mouse = Some(to);
             }
 
+            Action::Move(m) => {
+                let target = (m.x, m.y);
+                // The glide reports every cell it crosses (under the gate), so
+                // by the time it returns the pointer has arrived and whatever
+                // sits under it is lit. This last capture is the scene's own
+                // frame — the held one, and the one that carries any `await`.
+                // Nothing is re-sent for it: a second identical report would
+                // buy a duplicate frame and no new information.
+                self.move_to(i, target, move_cs)?;
+                let t = Instant::now();
+                self.capture(i, t, hold_cs, Some(target), true)?;
+            }
+
             Action::Scroll(s) => {
                 let at_cell = (s.x, s.y);
-                self.move_to(i, at_cell, move_cs);
+                self.move_to(i, at_cell, move_cs)?;
                 let seqs = scroll_sequences(s);
                 let last = seqs.len().saturating_sub(1);
                 for (n, seq) in seqs.iter().enumerate() {
@@ -355,6 +397,14 @@ fn sgr_motion(b: Button, at: (u32, u32)) -> String {
     } + 32;
     format!("\x1b[<{code};{};{}M", at.0, at.1)
 }
+/// SGR bare motion at `(x, y)` — no button held, so button code 3 plus the 32
+/// motion bit. This is what a terminal sends an application in any-event
+/// tracking when a hand crosses its window, and it is the one report a glide
+/// never used to send.
+fn sgr_hover(at: (u32, u32)) -> String {
+    format!("\x1b[<35;{};{}M", at.0, at.1)
+}
+
 fn scroll_sequences(s: &Scroll) -> Vec<String> {
     s.sequences()
 }
@@ -367,6 +417,7 @@ fn scene_label(i: usize, s: &Scene) -> String {
         Ok(Action::Click(_)) => "click",
         Ok(Action::Drag(_)) => "drag",
         Ok(Action::Scroll(_)) => "scroll",
+        Ok(Action::Move(_)) => "move",
         Ok(Action::Card(_)) => "card",
         Err(_) => "invalid",
     };

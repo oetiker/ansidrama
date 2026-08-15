@@ -189,6 +189,14 @@ impl Term {
         screen_caret(s.parser.screen())
     }
 
+    /// The mouse tracking mode the application has turned on, as the parser saw
+    /// it. Motion reports go only to an application that asked to hear about
+    /// motion, so this is the gate a glide consults before sending anything.
+    pub fn mouse_mode(&self) -> vt100::MouseProtocolMode {
+        let s = self.shared.lock().unwrap();
+        s.parser.screen().mouse_protocol_mode()
+    }
+
     pub fn send_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         self.master.write_all(bytes).context("write to pty")?;
         self.master.flush().ok();

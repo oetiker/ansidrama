@@ -79,13 +79,19 @@ Top level:
 Each
 .B [[scene]]
 performs exactly one action \(em
-.BR keys ", " text ", " click ", " drag ", " scroll ", or " card " \(em"
+.BR keys ", " text ", " click ", " drag ", " scroll ", " move ", or " card " \(em"
 plus timing
 .RB ( hold_cs ", " type_cs ", " move_cs ),
 and optionally
 .BR await ", " await_ms ", or " animated .
 A scene expands into many frames: one captured per key, per typed character,
 and per mouse cell\-step.
+.B move
+hovers the pointer at a cell and holds it there; the glide reports its motion
+to the application only when that application has turned on any\-event mouse
+tracking
+.RB ( \(rq?1003h \(rq ),
+and is a purely visual pointer animation otherwise.
 .PP
 .B record
 samples the terminal grid continuously rather than guessing from a quiet

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 use serde::Deserialize;
 
-use crate::mouse::{Click, Drag, Scroll};
+use crate::mouse::{Click, Drag, Move, Scroll};
 
 fn df_hold() -> u16 {
     100
@@ -335,6 +335,10 @@ pub struct Scene {
     pub drag: Option<Drag>,
     #[serde(default)]
     pub scroll: Option<Scroll>,
+    /// Move the pointer somewhere and hold it there — a hover. Spelled `move`
+    /// in the config; `move` is a Rust keyword, so the field cannot be.
+    #[serde(default, rename = "move")]
+    pub pointer: Option<Move>,
     /// A synthetic title card — no terminal interaction, just a held frame.
     #[serde(default)]
     pub card: Option<Card>,
@@ -401,6 +405,7 @@ pub enum Action<'a> {
     Click(&'a Click),
     Drag(&'a Drag),
     Scroll(&'a Scroll),
+    Move(&'a Move),
     Card(&'a Card),
 }
 
@@ -422,6 +427,9 @@ impl Scene {
         if let Some(s) = &self.scroll {
             acts.push(Action::Scroll(s));
         }
+        if let Some(m) = &self.pointer {
+            acts.push(Action::Move(m));
+        }
         if let Some(c) = &self.card {
             acts.push(Action::Card(c));
         }
@@ -429,7 +437,7 @@ impl Scene {
             0 => bail!("scene has no action"),
             1 => Ok(acts.into_iter().next().unwrap()),
             _ => bail!(
-                "scene has more than one action — use one of keys/text/click/drag/scroll/card per scene"
+                "scene has more than one action — use one of keys/text/click/drag/scroll/move/card per scene"
             ),
         }
     }
@@ -479,6 +487,16 @@ mod await_tests {
         let c = cfg("keys = ['t']\nawait = 'theme: light'");
         let p = c.scenes[0].pattern(c.rows).unwrap().unwrap();
         assert_eq!(p.row(), None);
+    }
+
+    /// A hover is where `await` earns the most: a `move` that lands on nothing
+    /// is otherwise as silent as a click that misses.
+    #[test]
+    fn await_accepts_a_move_scene() {
+        let c = cfg("move = { x = 12, y = 19 }\nawait = { find = 'example.com', row = -1 }");
+        let p = c.scenes[0].pattern(c.rows).unwrap().unwrap();
+        assert_eq!(p.row(), Some(-1));
+        c.validate().unwrap();
     }
 
     #[test]
@@ -590,13 +608,18 @@ mod tests {
             [[scene]]
             card = { text = "Hello", fg = "#fef9c3" }
             hold_cs = 150
+            [[scene]]
+            move = { x = 12, y = 19 }
             "##,
         )
         .unwrap();
-        assert_eq!(cfg.scenes.len(), 3);
+        assert_eq!(cfg.scenes.len(), 4);
         assert!(matches!(cfg.scenes[0].action().unwrap(), Action::Keys(k) if k.len() == 2));
         assert!(matches!(cfg.scenes[1].action().unwrap(), Action::Click(_)));
         assert!(matches!(cfg.scenes[2].action().unwrap(), Action::Card(_)));
+        assert!(
+            matches!(cfg.scenes[3].action().unwrap(), Action::Move(m) if (m.x, m.y) == (12, 19))
+        );
         assert_eq!(
             cfg.scenes[2].card.as_ref().unwrap().resolved_lines(),
             vec!["Hello"]

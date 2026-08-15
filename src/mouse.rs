@@ -86,6 +86,17 @@ impl Drag {
     }
 }
 
+/// Move the pointer to a spot and stay there — a hover, no button ever pressed.
+///
+/// Unlike its neighbours this carries no `sequences()`. Whether a bare-motion
+/// report may be sent at all depends on the mode the application has turned on,
+/// and only the terminal knows that, so the wire form is emitted by the recorder.
+#[derive(Deserialize)]
+pub struct Move {
+    pub x: u32,
+    pub y: u32,
+}
+
 /// A wheel scroll at a point, `n` clicks in a direction.
 #[derive(Deserialize)]
 pub struct Scroll {
