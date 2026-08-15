@@ -100,8 +100,9 @@ ansidrama record record.toml
 Each `record` scene **expands into many frames** — one captured **per key**, **per
 typed character**, and **per mouse cell-step** — so keyboard and mouse actions play
 out step by step (a corner drag *animates* the resize; typing appears char by
-char). Cursor-only moves reuse the last capture; drags re-capture each step so live
-UI is shown.
+char). Drags re-capture each step so live UI is shown; a cursor-only move
+re-captures too when the application is listening for motion (see **Hover**), and
+otherwise reuses the last capture.
 
 | Field    | Meaning |
 |----------|---------|
@@ -110,6 +111,7 @@ UI is shown.
 | `click`  | `{ x, y, button = "left" }` — the pointer moves in, then press + release |
 | `drag`   | `{ from = [x,y], to = [x,y], button = "left" }` — one frame per cell |
 | `scroll` | `{ x, y, dir = "down", n = 3 }` |
+| `move`   | `{ x, y }` — hover: the pointer glides there and stays, no button pressed |
 | `card`   | a title card (see below) — no terminal interaction |
 | `file`   | (encode only) path to a captured `.ansi` snapshot |
 
@@ -239,13 +241,48 @@ settled result and holds for the duration the script authored (`type_cs`,
 the input has already settled, and holds for its own real measured duration;
 **`card`** is a synthetic title card.
 
-One exception to that reading: a **pointer-move** frame — a cell-step of the
-animated cursor between two positions, which reuses the screen underneath and
-sends nothing to the app — is also written as `app-driven`, but holds for the
-authored `move_cs` rather than a measured duration. Its `scene` column is
-correct, so a bisect still lands on the right scene; only don't read
-"`app-driven`" as "measured" on a row whose scene is a `click`, `drag` or
-`scroll`.
+One exception to that reading: a **silent pointer-move** frame — a cell-step of
+the animated cursor that reuses the screen underneath and sends nothing to the
+app — is also written as `app-driven`, but holds for the authored `move_cs`
+rather than a measured duration. Its `scene` column is correct, so a bisect
+still lands on the right scene; only don't read "`app-driven`" as "measured" on
+a row whose scene is a `click`, `drag`, `scroll` or `move`.
+
+This exception applies only while the pointer is silent. A glide that *reports*
+its motion (see **Hover**) is a sequence of real inputs, so its cell-steps are
+ordinary `input-driven` rows.
+
+## Hover
+
+A pointer that only draws itself cannot light anything it passes over. So a
+glide — the approach before a `click`, `drag` or `scroll`, and the whole of a
+`move` — sends a bare-motion report per cell, **but only to an application that
+asked to hear about motion** by turning on any-event tracking (`?1003h`). Under
+any other mouse mode the pointer stays what it always was: an animation over an
+unchanged screen, sending nothing.
+
+That gate is why this is safe in an existing script. An application that never
+requested motion cannot receive any, and one that did was already being sent
+motion during every drag.
+
+```toml
+# Hover a link and prove it lit, rather than hoping.
+[[scene]]
+move = { x = 12, y = 19 }
+await = { find = "example.com", row = -1 }
+hold_cs = 240
+```
+
+Two things worth knowing when a hover records as nothing:
+
+- **Reporting costs real time.** Each cell of a reporting glide waits for the
+  app the way a drag's steps do — which is the point, since the repaint is what
+  you are recording — so keep glide paths short. The output is unaffected:
+  `move_cs` still authors each step's hold.
+- **Through `tmux`, the mode is tmux's.** tmux propagates `?1003h` to its outer
+  terminal on behalf of the focused pane, and withdraws it when focus moves to a
+  pane whose application does not want motion. A glide reports only while the
+  interested pane has focus.
 
 ## Title cards
 

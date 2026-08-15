@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+- **`record`**: `move = { x, y }` — hover the pointer at a cell and hold it there, with no button ever pressed. Like any other scene it carries `hold_cs` and can carry an `await`, so a hover that lands on nothing aborts the run instead of recording a frame where nothing is lit.
+
 ### Changed
+
+- **`record`**: the pointer now **reports its motion** to the application. Every cell of a glide — the approach before a `click`, `drag` or `scroll`, and the whole of a `move` — sends a bare-motion report, so a recorded pointer lights what it passes over and a click arrives with real motion in front of it. Previously a glide drew itself and sent nothing, and a recording that wanted a hover had to hand-write the wire form into a `keys` scene, which drew the text caret instead of the pointer.
+
+  **Gated on the application's own mouse mode:** reports are sent only under any-event tracking (`?1003h`). Under any other mode the pointer behaves exactly as before — frames over an unchanged screen, no bytes — so an application that never asked for motion cannot receive it, and no existing script changes behaviour. Note that a reporting glide waits for the app at each cell, as a drag's steps already did, so a long glide takes longer in real time; the authored `move_cs` still decides how long each step holds in the output.
 
 ### Fixed
 
