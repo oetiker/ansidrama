@@ -26,8 +26,21 @@ use crate::grid::Cell;
 // outside the PUA — the arrangement here is 2MB smaller and covers far more.
 // The *Mono* symbol variant constrains icons to one advance, which is what a
 // cell grid needs; the proportional one would overhang its neighbour.
-const FONT_REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
-const FONT_BOLD: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
+const FONT_JB_REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
+const FONT_JB_BOLD: &[u8] = include_bytes!("../assets/JetBrainsMono-Bold.ttf");
+const FONT_JB_ITALIC: &[u8] = include_bytes!("../assets/JetBrainsMono-Italic.ttf");
+const FONT_JB_BOLD_ITALIC: &[u8] = include_bytes!("../assets/JetBrainsMono-BoldItalic.ttf");
+
+// Smalti is a pixel font delivered as outlines: every glyph is axis-aligned
+// rectangles on a grid where one pixel is exactly 64 font units. Its advance is
+// exactly half the em and its ascent-descent span is exactly one em, so at any
+// whole multiple of 16px the cell math below needs no stretch correction and
+// every glyph origin lands on an integer pixel — coverage comes back 0 or 1.
+const FONT_SMALTI_REGULAR: &[u8] = include_bytes!("../assets/Smalti8x16-Regular.ttf");
+const FONT_SMALTI_BOLD: &[u8] = include_bytes!("../assets/Smalti8x16-Bold.ttf");
+const FONT_SMALTI_ITALIC: &[u8] = include_bytes!("../assets/Smalti8x16-Italic.ttf");
+const FONT_SMALTI_BOLD_ITALIC: &[u8] = include_bytes!("../assets/Smalti8x16-BoldItalic.ttf");
+
 const FONT_ICONS: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
 const FONT_SYMBOLS: &[u8] = include_bytes!("../assets/JuliaMono-Regular.ttf");
 
@@ -57,8 +70,8 @@ impl Renderer {
     /// output resolution. 18px is small-but-crisp; 28–32px reads well in a README.
     pub fn new(px: f32) -> Self {
         let px = px.max(6.0);
-        let regular = FontRef::try_from_slice(FONT_REGULAR).expect("regular font parses");
-        let bold = FontRef::try_from_slice(FONT_BOLD).expect("bold font parses");
+        let regular = FontRef::try_from_slice(FONT_JB_REGULAR).expect("regular font parses");
+        let bold = FontRef::try_from_slice(FONT_JB_BOLD).expect("bold font parses");
         let scaled = regular.as_scaled(PxScale::from(px));
         let adv = scaled.h_advance(regular.glyph_id('M')); // monospace: one advance
         let asc = scaled.ascent();
@@ -793,5 +806,53 @@ mod tests {
         let (w2, _, _) = r.text_extents("MM", 18.0);
         assert!(w1 > 0.0);
         assert!((w2 - 2.0 * w1).abs() < 0.01);
+    }
+
+    /// The whole pixel-font design rests on these two ratios. Smalti's advance is
+    /// exactly half the em and its ascent-descent span is exactly one em, which is
+    /// what makes `Renderer::new`'s stretch correction a no-op and puts glyph
+    /// origins on integer pixels. If this fails, the font changed — do not adjust
+    /// the test, re-read the design.
+    #[test]
+    fn smalti_advance_is_half_an_em_and_line_is_one_em() {
+        let f = FontRef::try_from_slice(FONT_SMALTI_REGULAR).expect("smalti parses");
+        let em = 1024.0_f32; // scale so one em == 1024px, i.e. font units
+        let s = f.as_scaled(PxScale::from(em));
+        assert_eq!(s.h_advance(f.glyph_id('M')), em / 2.0, "advance must be half an em");
+        assert_eq!(s.ascent() - s.descent(), em, "line must be exactly one em");
+        assert_eq!(s.line_gap(), 0.0, "line gap must be zero");
+    }
+
+    /// Adding italics must not move the cell by a pixel: the cell is derived from
+    /// the advance and the ascent-descent span, and all four JetBrains faces are
+    /// the same 2.304 release with identical metrics.
+    #[test]
+    fn jetbrains_italics_have_the_same_metrics_as_the_upright_faces() {
+        let up = FontRef::try_from_slice(FONT_JB_REGULAR).expect("regular parses");
+        let u = up.as_scaled(PxScale::from(1000.0));
+        for (name, bytes) in [
+            ("italic", FONT_JB_ITALIC),
+            ("bold italic", FONT_JB_BOLD_ITALIC),
+        ] {
+            let it = FontRef::try_from_slice(bytes).expect("italic parses");
+            let i = it.as_scaled(PxScale::from(1000.0));
+            assert_eq!(i.h_advance(it.glyph_id('M')), u.h_advance(up.glyph_id('M')), "{name} advance");
+            assert_eq!(i.ascent(), u.ascent(), "{name} ascent");
+            assert_eq!(i.descent(), u.descent(), "{name} descent");
+        }
+    }
+
+    /// All four Smalti faces must load, including the two sheared ones.
+    #[test]
+    fn every_smalti_face_parses() {
+        for bytes in [
+            FONT_SMALTI_REGULAR,
+            FONT_SMALTI_BOLD,
+            FONT_SMALTI_ITALIC,
+            FONT_SMALTI_BOLD_ITALIC,
+        ] {
+            let f = FontRef::try_from_slice(bytes).expect("smalti face parses");
+            assert_ne!(f.glyph_id('A').0, 0, "face must carry 'A'");
+        }
     }
 }
