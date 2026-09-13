@@ -28,11 +28,12 @@ pub fn screen_to_grid(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<Vec<C
     for r in 0..rows {
         let mut row = Vec::with_capacity(cols as usize);
         for c in 0..cols {
-            let (ch, mut fg, mut bg, bold, inverse) = match screen.cell(r, c) {
+            let (ch, mut fg, mut bg, bold, italic, inverse) = match screen.cell(r, c) {
                 Some(cell) if cell.is_wide_continuation() => (
                     ' ',
                     vt_color(cell.fgcolor(), DEF_FG),
                     vt_color(cell.bgcolor(), DEF_BG),
+                    false,
                     false,
                     cell.inverse(),
                 ),
@@ -41,14 +42,15 @@ pub fn screen_to_grid(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<Vec<C
                     vt_color(cell.fgcolor(), DEF_FG),
                     vt_color(cell.bgcolor(), DEF_BG),
                     cell.bold(),
+                    cell.italic(),
                     cell.inverse(),
                 ),
-                None => (' ', DEF_FG, DEF_BG, false, false),
+                None => (' ', DEF_FG, DEF_BG, false, false, false),
             };
             if inverse {
                 std::mem::swap(&mut fg, &mut bg);
             }
-            row.push(Cell { ch, fg, bg, bold, italic: false });
+            row.push(Cell { ch, fg, bg, bold, italic });
         }
         out.push(row);
     }
@@ -307,6 +309,17 @@ mod tests {
         assert_eq!(screen_caret(p.screen()), Some((2, 0))); // (x=col, y=row)
         let p = parse(3, 10, b"ab\x1b[?25l");
         assert_eq!(screen_caret(p.screen()), None); // cursor hidden
+    }
+
+    /// Italic must survive the embedded terminal, not just the ANSI file parser.
+    /// record mode builds its grid here, and it is the path that captures a live
+    /// session — the case this feature exists for.
+    #[test]
+    fn screen_to_grid_carries_italic() {
+        let p = parse(2, 20, b"\x1b[3mI\x1b[23mU");
+        let g = screen_to_grid(p.screen(), 2, 20);
+        assert!(g[0][0].italic, "italic cell must carry the flag");
+        assert!(!g[0][1].italic, "SGR 23 must clear it");
     }
 }
 
