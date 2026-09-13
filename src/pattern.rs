@@ -77,6 +77,7 @@ mod tests {
             fg: (0, 0, 0),
             bg: (0, 0, 0),
             bold: false,
+            italic: false,
         }
     }
 

@@ -718,6 +718,7 @@ mod tests {
             fg: (255, 255, 255),
             bg: (0, 0, 0),
             bold: false,
+            italic: false,
         }]];
         let img = r.render(&grid, 1, 1);
         assert!(
@@ -732,6 +733,7 @@ mod tests {
             fg: (255, 255, 255),
             bg: (0, 0, 0),
             bold,
+            italic: false,
         }]];
         r.render(&grid, 1, 1).pixels().any(|p| p[0] > 200)
     }
@@ -787,6 +789,7 @@ mod tests {
             fg: (255, 255, 255),
             bg: (0, 0, 0),
             bold: false,
+            italic: false,
         }]];
         let (w, h) = ink_box(&r.render(&grid, 1, 1));
         assert!(

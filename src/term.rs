@@ -48,7 +48,7 @@ pub fn screen_to_grid(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<Vec<C
             if inverse {
                 std::mem::swap(&mut fg, &mut bg);
             }
-            row.push(Cell { ch, fg, bg, bold });
+            row.push(Cell { ch, fg, bg, bold, italic: false });
         }
         out.push(row);
     }

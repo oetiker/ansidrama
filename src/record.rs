@@ -457,6 +457,7 @@ fn dump_failure_screen(
                     fg: (0, 0, 0),
                     bg: (255, 255, 255),
                     bold: false,
+                    italic: false,
                 });
             renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
         }
@@ -609,6 +610,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
                             fg: (0, 0, 0),
                             bg: (255, 255, 255),
                             bold: false,
+                            italic: false,
                         });
                     renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
                 }
