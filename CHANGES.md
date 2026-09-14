@@ -9,9 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
-### Changed
+- **The box-drawing painter now covers all of U+2500..U+257F** except the dashed
+  and diagonal glyphs: the heavy family (`━ ┃ ┏ ┓ ┗ ┛ ┣ ┫ ┳ ┻ ╋`), every
+  light/heavy mixed junction (`┞ ┡ ╀ ╈ …`), and the half-line stubs (`╴ ╵ ╶ ╷`,
+  `╸ ╹ ╺ ╻`, `╼ ╽ ╾ ╿`) — 69 new characters. Arms are painted one at a time, so a
+  cell can carry different weights on the same axis. Heavy rules are drawn at
+  twice the light thickness.
+
+  Previously these fell through to the font. A heavy rule then came out
+  **dashed**, because the glyph does not reach the cell edges — visible with
+  JetBrains Mono too, not only with `font = "smalti"`.
 
 ### Fixed
+
+- **Corners with no right or down arm had a hole where their arms meet.**
+  `┘ ╝ ╛ ╜` ended each rule at the centre line instead of past the far edge of
+  the crossing band, so the single pixel joining them was never painted and the
+  glyph was two disjoint strokes. Caught by the font-baseline regression gate.
+
+- **Rounded box corners (`╭ ╮ ╯ ╰`) are now hand-painted** like the rest of
+  the box-drawing set, as two straight stubs plus a hard-edged quarter arc whose
+  radius scales with the cell. They were missing from the painter's table, so
+  they fell through to a fallback face that scales a glyph to fill the whole
+  cell: the arms landed on the cell's outer edges instead of its centre lines,
+  were anti-aliased, and left the join pixel at partial coverage. Visible with
+  any font, glaring with `font = "smalti"`, which carries no box glyphs at all.
 
 ## 0.5.0 - 2026-09-14
 

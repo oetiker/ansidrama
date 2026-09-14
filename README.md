@@ -18,7 +18,9 @@ moves, silent-movie title cards — and every frame is rendered deterministicall
 
 AnsiDrama renders each frame itself: it parses the terminal's ANSI cell grid
 and rasterizes it with a bundled monospace font, hand-painting box-drawing and
-block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
+block glyphs so `─│═┃╋╭▒█…` reach the exact cell edges and tile seamlessly — the
+light, heavy, double and rounded families all come from the painter, not from
+whichever font is in use, so they cannot come out soft or dashed. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
 
 ```mermaid
@@ -386,7 +388,9 @@ means choosing a new output resolution — that is inherent to a pixel font, not
 oversight.
 
 Smalti carries no box-drawing or block glyphs, which costs nothing: ansidrama paints
-those itself so they reach the exact cell edges. It does carry all 256 Braille
+those itself so they reach the exact cell edges. That covers all of U+2500..U+257F
+bar the dashed (`┄┅┆┇┈┉┊┋╌╍╎╏`) and diagonal (`╱╲╳`) glyphs, which still come from a
+fallback face. It does carry all 256 Braille
 patterns, which JetBrains Mono does not. Icons still come from the Nerd Font
 fallback and are anti-aliased, so they look softer than the text around them.
 
