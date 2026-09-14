@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+### Fixed
+
+## 0.5.0 - 2026-09-14
+
+### New
+
 - **`font = "smalti"`** selects a bundled 8x16 pixel font, rendered with no
   anti-aliasing. Sizes must be whole multiples of 16; ansidrama rejects others
   and names the nearest valid ones.
