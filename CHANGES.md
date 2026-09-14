@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+### Fixed
+
+## 0.5.1 - 2026-09-14
+
+### New
+
+### Changed
+
 - The bundled demo scripts (`demo/readme.toml`, `demo/hello.toml`) now record
   in `font = "smalti"` at `font_px = 16`, so the README recordings show the
   pixel font. Same width as before, and roughly half the file size.
