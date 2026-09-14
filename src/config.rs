@@ -40,6 +40,9 @@ pub struct Card {
     pub bg: String,
     #[serde(default)]
     pub bold: bool,
+    /// Draw the card in the slanted face.
+    #[serde(default)]
+    pub italic: bool,
     /// Draw the double-line intertitle frame (default true).
     #[serde(default = "df_true")]
     pub border: bool,

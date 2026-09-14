@@ -34,7 +34,7 @@ use crate::frame;
 use crate::grid::Cell;
 use crate::mouse::{Button, Scroll};
 use crate::pattern::Pattern;
-use crate::raster::Renderer;
+use crate::raster::{FontStack, Renderer};
 use crate::sampler::{Sampler, WaitOutcome};
 use crate::term::Term;
 
@@ -443,7 +443,7 @@ fn dump_failure_screen(
     // now" means, and it is the same screen whose text the error already
     // quotes — the picture must not disagree with the words.
     let state = acc.newest()?;
-    let renderer = Renderer::new(cfg.font_px);
+    let renderer = Renderer::new(cfg.font_px, FontStack::JetBrainsMono);
     let mut img = renderer.render(&state.grid, cfg.cols, cfg.rows);
     if cfg.cursor {
         if let Some((cx, cy)) = state.caret {
@@ -540,7 +540,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let specs = assemble(&state_times, end, &rec.marks, rec.min_cs);
 
     // --- render --------------------------------------------------------
-    let renderer = Renderer::new(cfg.font_px);
+    let renderer = Renderer::new(cfg.font_px, FontStack::JetBrainsMono);
     let cell_h = renderer.cell_size().1;
     let chrome = match &cfg.chrome {
         Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,

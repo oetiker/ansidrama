@@ -123,6 +123,7 @@ impl Chrome {
                         self.title_px,
                         self.text,
                         false,
+                        false,
                     );
                 }
             }
@@ -137,6 +138,7 @@ impl Chrome {
                         &self.title,
                         self.title_px,
                         self.text,
+                        false,
                         false,
                     );
                 }
@@ -278,7 +280,7 @@ fn round_corners(img: &mut RgbaImage, r: u32, top_only: bool) {
 mod tests {
     use super::*;
     use crate::config::{ChromeConfig, ChromeStyle};
-    use crate::raster::Renderer;
+    use crate::raster::{FontStack, Renderer};
     use image::{Rgba, RgbaImage};
 
     fn content(c: (u8, u8, u8)) -> RgbaImage {
@@ -296,7 +298,7 @@ mod tests {
 
     #[test]
     fn none_pads_with_term_bg_opaque() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
         let ch = Chrome::from_config(&cfg(ChromeStyle::None, 6), cell_h, (0, 0, 0)).unwrap();
         let out = ch.matte(&r, &content((10, 20, 30)));
@@ -308,7 +310,7 @@ mod tests {
 
     #[test]
     fn disabled_is_identity_size() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let ch = Chrome::disabled();
         assert!(!ch.is_active());
         let out = ch.matte(&r, &content((1, 2, 3)));
@@ -317,7 +319,7 @@ mod tests {
 
     #[test]
     fn macos_has_bar_dots_and_rounded_corners() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
         let ch = Chrome::from_config(&cfg(ChromeStyle::Macos, 8), cell_h, (0, 0, 0)).unwrap();
         let out = ch.matte(&r, &content((5, 5, 5)));
@@ -331,7 +333,7 @@ mod tests {
 
     #[test]
     fn linux_rounds_top_only_and_draws_close() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
         let ch = Chrome::from_config(&cfg(ChromeStyle::Linux, 8), cell_h, (0, 0, 0)).unwrap();
         let out = ch.matte(&r, &content((5, 5, 5)));

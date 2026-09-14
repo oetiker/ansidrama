@@ -44,10 +44,57 @@ const FONT_SMALTI_BOLD_ITALIC: &[u8] = include_bytes!("../assets/Smalti8x16-Bold
 const FONT_ICONS: &[u8] = include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf");
 const FONT_SYMBOLS: &[u8] = include_bytes!("../assets/JuliaMono-Regular.ttf");
 
+/// Which family of faces a `Renderer` draws text from.
+///
+/// The two are not interchangeable in one respect: Smalti is a pixel font, exact
+/// only at whole multiples of its 16px design size. `is_pixel_exact` is what the
+/// config validator and the free-size text path consult to know that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+pub enum FontStack {
+    /// JetBrains Mono — an outline font, exact at any size.
+    #[default]
+    #[serde(rename = "jetbrains")]
+    JetBrainsMono,
+    /// Smalti 8x16 — a pixel font, exact only at whole multiples of 16px.
+    #[serde(rename = "smalti")]
+    Smalti,
+}
+
+impl FontStack {
+    /// The four faces, in `[regular, bold, italic, bold_italic]` order.
+    fn faces(self) -> [&'static [u8]; 4] {
+        match self {
+            FontStack::JetBrainsMono => [
+                FONT_JB_REGULAR,
+                FONT_JB_BOLD,
+                FONT_JB_ITALIC,
+                FONT_JB_BOLD_ITALIC,
+            ],
+            FontStack::Smalti => [
+                FONT_SMALTI_REGULAR,
+                FONT_SMALTI_BOLD,
+                FONT_SMALTI_ITALIC,
+                FONT_SMALTI_BOLD_ITALIC,
+            ],
+        }
+    }
+
+    /// One "pixel" of a pixel font, in output pixels — the step every user-supplied
+    /// size must be a whole multiple of. `None` for an outline font, which is exact
+    /// at any size.
+    pub fn pixel_step(self) -> Option<f32> {
+        match self {
+            FontStack::JetBrainsMono => None,
+            FontStack::Smalti => Some(16.0),
+        }
+    }
+}
+
 /// Fixed cell metrics + the loaded fonts, derived once and reused per frame.
 pub struct Renderer {
-    regular: FontRef<'static>,
-    bold: FontRef<'static>,
+    /// `[regular, bold, italic, bold_italic]` — see `face`.
+    faces: [FontRef<'static>; 4],
+    stack: FontStack,
     /// Fallback faces, in consultation order. Unlike the primary these carry no
     /// pre-computed scale: they are fitted per glyph (see [`Renderer::draw_fitted`]),
     /// because a fallback's metrics say nothing useful about our cell. A
@@ -68,12 +115,13 @@ pub struct Renderer {
 impl Renderer {
     /// Build a renderer at `px` font size. Larger `px` ⇒ larger cells ⇒ higher
     /// output resolution. 18px is small-but-crisp; 28–32px reads well in a README.
-    pub fn new(px: f32) -> Self {
+    pub fn new(px: f32, stack: FontStack) -> Self {
         let px = px.max(6.0);
-        let regular = FontRef::try_from_slice(FONT_JB_REGULAR).expect("regular font parses");
-        let bold = FontRef::try_from_slice(FONT_JB_BOLD).expect("bold font parses");
-        let scaled = regular.as_scaled(PxScale::from(px));
-        let adv = scaled.h_advance(regular.glyph_id('M')); // monospace: one advance
+        let faces: [FontRef<'static>; 4] = stack
+            .faces()
+            .map(|bytes| FontRef::try_from_slice(bytes).expect("bundled face parses"));
+        let scaled = faces[0].as_scaled(PxScale::from(px));
+        let adv = scaled.h_advance(faces[0].glyph_id('M')); // monospace: one advance
         let asc = scaled.ascent();
         let line = asc - scaled.descent(); // descent is negative
         let cell_w = adv.round().max(1.0) as u32;
@@ -90,14 +138,33 @@ impl Renderer {
             .collect();
 
         Renderer {
-            regular,
-            bold,
+            faces,
+            stack,
             fallbacks,
             cell_w,
             cell_h,
             scale,
             ascent,
         }
+    }
+
+    /// The face for a given weight and slant.
+    fn face(&self, bold: bool, italic: bool) -> &FontRef<'static> {
+        &self.faces[(bold as usize) | ((italic as usize) << 1)]
+    }
+
+    /// True when this renderer reproduces its font's pixels exactly, which holds
+    /// only at whole multiples of the design size. Free-size text must round its
+    /// origins to whole pixels when this is true, or sub-pixel positioning puts
+    /// the anti-aliasing straight back.
+    pub fn is_pixel_exact(&self) -> bool {
+        self.stack.pixel_step().is_some()
+    }
+
+    /// Round to a whole pixel for a pixel font; identity otherwise, so no existing
+    /// outline-font render moves.
+    fn snap(&self, v: f32) -> f32 {
+        if self.is_pixel_exact() { v.round() } else { v }
     }
 
     /// The first fallback face carrying `ch`, if any.
@@ -174,8 +241,8 @@ impl Renderer {
     /// `(width, ascent, line_height)` of `text` at `px`, in this font's metrics.
     /// Monospace: width is `char_count · advance`.
     pub fn text_extents(&self, text: &str, px: f32) -> (f32, f32, f32) {
-        let s = self.regular.as_scaled(PxScale::from(px));
-        let adv = s.h_advance(self.regular.glyph_id('M'));
+        let s = self.faces[0].as_scaled(PxScale::from(px));
+        let adv = s.h_advance(self.faces[0].glyph_id('M'));
         (
             text.chars().count() as f32 * adv,
             s.ascent(),
@@ -195,8 +262,9 @@ impl Renderer {
         px: f32,
         color: Rgb,
         bold: bool,
+        italic: bool,
     ) {
-        let font = if bold { &self.bold } else { &self.regular };
+        let font = self.face(bold, italic);
         let adv = font
             .as_scaled(PxScale::from(px))
             .h_advance(font.glyph_id('M'));
@@ -245,7 +313,7 @@ impl Renderer {
         if let Some(spec) = box_spec(ch) {
             self.draw_box(img, ux, uy, spec, bg);
         } else if !self.draw_block(img, ux, uy, ch, bg) {
-            let font = if cell.bold { &self.bold } else { &self.regular };
+            let font = self.face(cell.bold, cell.italic);
             self.blit_glyph(
                 img,
                 font,
@@ -290,7 +358,7 @@ impl Renderer {
                     continue;
                 }
 
-                let font = if cell.bold { &self.bold } else { &self.regular };
+                let font = self.face(cell.bold, cell.italic);
                 if font.glyph_id(cell.ch).0 == 0 {
                     // Not in the text font: a fallback face, fitted to the cell.
                     let drawn = match self.fallback_for(cell.ch) {
@@ -356,6 +424,7 @@ impl Renderer {
         fg: Rgb,
         bg: Rgb,
         bold: bool,
+        italic: bool,
         border: bool,
         title_px: f32,
         subtitle_px: f32,
@@ -363,7 +432,7 @@ impl Renderer {
         let title_px = title_px.max(6.0);
         let subtitle_px = subtitle_px.max(6.0);
         let mut img = RgbaImage::from_pixel(w, h, Rgba([bg.0, bg.1, bg.2, 255]));
-        let font = if bold { &self.bold } else { &self.regular };
+        let font = self.face(bold, italic);
 
         if border && w > 8 && h > 8 {
             let inset = (title_px * 0.6).round() as i32;
@@ -452,9 +521,13 @@ impl Renderer {
             }
             return;
         }
-        let glyph = font
-            .glyph_id(ch)
-            .with_scale_and_position(scale, ab_glyph::point(x, baseline));
+        // A pixel font must land on integer pixels here too, or free-size text
+        // (title cards, chrome titles) grows the same anti-aliased seam the
+        // cell-grid path avoids by construction.
+        let glyph = font.glyph_id(ch).with_scale_and_position(
+            scale,
+            ab_glyph::point(self.snap(x), self.snap(baseline)),
+        );
         if let Some(outline) = font.outline_glyph(glyph) {
             let b = outline.px_bounds();
             let (iw, ih) = (img.width() as i32, img.height() as i32);
@@ -699,9 +772,9 @@ mod tests {
 
     #[test]
     fn draw_text_marks_pixels() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let mut img = RgbaImage::from_pixel(200, 40, Rgba([255, 255, 255, 255]));
-        r.draw_text(&mut img, 2.0, 28.0, "Hello", 18.0, (0, 0, 0), false);
+        r.draw_text(&mut img, 2.0, 28.0, "Hello", 18.0, (0, 0, 0), false, false);
         assert!(
             img.pixels().any(|p| p[0] < 200),
             "text should darken some pixels"
@@ -712,7 +785,7 @@ mod tests {
     /// draw nothing, so a missing icon was indistinguishable from a blank cell.
     #[test]
     fn missing_glyph_draws_visible_tofu() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let grid = vec![vec![Cell {
             ch: '\u{1F600}', // no emoji in JetBrains Mono, patched or not
             fg: (255, 255, 255),
@@ -743,7 +816,7 @@ mod tests {
     /// powerline from JetBrains Mono itself — in both weights.
     #[test]
     fn every_layer_of_the_font_chain_draws() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         for ch in [
             '\u{f15c}', '\u{f0f6}', // Nerd Font icons (PUA)
             '\u{25A4}', '\u{2315}', // Unicode symbols mdmost uses
@@ -781,7 +854,7 @@ mod tests {
     /// square, which makes it a direct probe: it must draw square.
     #[test]
     fn fallback_glyphs_keep_their_proportions() {
-        let r = Renderer::new(40.0);
+        let r = Renderer::new(40.0, FontStack::JetBrainsMono);
         let (cw, chh) = r.cell_size();
         assert!(chh > cw, "cell is taller than wide, or this proves nothing");
         let grid = vec![vec![Cell {
@@ -804,7 +877,7 @@ mod tests {
 
     #[test]
     fn text_extents_scale_with_length() {
-        let r = Renderer::new(20.0);
+        let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let (w1, _, _) = r.text_extents("M", 18.0);
         let (w2, _, _) = r.text_extents("MM", 18.0);
         assert!(w1 > 0.0);
@@ -856,6 +929,75 @@ mod tests {
         ] {
             let f = FontRef::try_from_slice(bytes).expect("smalti face parses");
             assert_ne!(f.glyph_id('A').0, 0, "face must carry 'A'");
+        }
+    }
+
+    /// The point of the whole exercise: at a valid size, Smalti puts down only
+    /// foreground or background pixels. Any intermediate value means a glyph
+    /// origin drifted off the integer grid, or the scale stopped being exact.
+    /// This one assertion covers the metrics, the scale, and the origin at once.
+    #[test]
+    fn smalti_renders_with_no_anti_aliasing() {
+        let r = Renderer::new(32.0, FontStack::Smalti);
+        let fg = (255u8, 255u8, 255u8);
+        let bg = (0u8, 0u8, 0u8);
+        // ASCII only, and nothing hand-painted: this must exercise the font path.
+        let text = "Hello, Smalti! 0123 gjpqy";
+        let grid: Vec<Vec<Cell>> = vec![text
+            .chars()
+            .map(|ch| Cell { ch, fg, bg, bold: false, italic: false })
+            .collect()];
+        let img = r.render(&grid, text.chars().count() as u32, 1);
+        for (x, y, p) in img.enumerate_pixels() {
+            let got = (p[0], p[1], p[2]);
+            assert!(
+                got == fg || got == bg,
+                "pixel at ({x},{y}) is {got:?} — neither fg nor bg, so anti-aliasing crept in"
+            );
+        }
+    }
+
+    /// Smalti's cell is exactly half as wide as it is tall, at every valid size.
+    #[test]
+    fn smalti_cell_is_half_as_wide_as_tall() {
+        assert_eq!(Renderer::new(16.0, FontStack::Smalti).cell_size(), (8, 16));
+        assert_eq!(Renderer::new(32.0, FontStack::Smalti).cell_size(), (16, 32));
+        assert_eq!(Renderer::new(48.0, FontStack::Smalti).cell_size(), (24, 48));
+    }
+
+    /// Italic must actually select a different face, not silently fall back to
+    /// the upright one.
+    #[test]
+    fn italic_draws_differently_from_upright() {
+        for stack in [FontStack::JetBrainsMono, FontStack::Smalti] {
+            let r = Renderer::new(32.0, stack);
+            let cell = |italic| Cell {
+                ch: 'a',
+                fg: (255, 255, 255),
+                bg: (0, 0, 0),
+                bold: false,
+                italic,
+            };
+            let upright = r.render(&[vec![cell(false)]], 1, 1);
+            let slanted = r.render(&[vec![cell(true)]], 1, 1);
+            assert_ne!(
+                upright.as_raw(),
+                slanted.as_raw(),
+                "{stack:?}: italic 'a' must not be identical to upright 'a'"
+            );
+        }
+    }
+
+    /// Bold and italic select four distinct faces, not three.
+    #[test]
+    fn all_four_faces_are_distinct() {
+        let r = Renderer::new(32.0, FontStack::Smalti);
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let c = Cell { ch: 'm', fg: (255, 255, 255), bg: (0, 0, 0), bold, italic };
+            let img = r.render(&[vec![c]], 1, 1).as_raw().clone();
+            assert!(!seen.contains(&img), "face (bold={bold}, italic={italic}) duplicates another");
+            seen.push(img);
         }
     }
 }
