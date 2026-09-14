@@ -25,7 +25,7 @@ fn default_chrome_text() -> String {
 }
 
 /// A synthetic "silent-movie" title card.
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Card {
     /// Single string; embedded `\n` splits into lines.
@@ -40,6 +40,9 @@ pub struct Card {
     pub bg: String,
     #[serde(default)]
     pub bold: bool,
+    /// Draw the card in the slanted face.
+    #[serde(default)]
+    pub italic: bool,
     /// Draw the double-line intertitle frame (default true).
     #[serde(default = "df_true")]
     pub border: bool,
@@ -84,7 +87,7 @@ pub enum ChromeStyle {
 }
 
 /// Optional window chrome + padding around the cell grid. Absent ⇒ no change.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ChromeConfig {
     #[serde(default)]
@@ -105,11 +108,16 @@ pub struct ChromeConfig {
 
 // --- encode -----------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct EncodeConfig {
     pub cols: u32,
     pub rows: u32,
+    /// Which bundled font family to draw with: `"jetbrains"` (default, an outline
+    /// font, exact at any size) or `"smalti"` (a pixel font, exact only at whole
+    /// multiples of 16px — see `check_pixel_size`).
+    #[serde(default)]
+    pub font: crate::raster::FontStack,
     /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
@@ -147,6 +155,28 @@ pub fn default_card_subtitle_px() -> f32 {
 pub fn default_max_fps() -> u32 {
     30
 }
+
+/// Reject a pixel size a pixel font cannot reproduce exactly.
+///
+/// Smalti draws one font pixel per 16 output pixels, so it is exact at 16, 32, 48…
+/// and blurry everywhere between. `key` names the config key in the error, and the
+/// message offers the two nearest valid sizes so the fix is one edit. An outline
+/// font has no such constraint and always passes.
+pub fn check_pixel_size(font: crate::raster::FontStack, key: &str, px: f32) -> Result<()> {
+    let Some(step) = font.pixel_step() else {
+        return Ok(());
+    };
+    if px >= step && (px / step).fract() == 0.0 {
+        return Ok(());
+    }
+    let lower = (px / step).floor().max(1.0) * step;
+    bail!(
+        "{key} = {px} is not valid for font = \"smalti\" \
+         (must be a multiple of {step}); try {lower} or {}",
+        lower + step
+    );
+}
+
 /// Minimum per-frame hold (centiseconds) implied by a frame-rate cap. `0` = no cap.
 pub fn min_hold_cs(max_fps: u32) -> u16 {
     match max_fps {
@@ -155,7 +185,7 @@ pub fn min_hold_cs(max_fps: u32) -> u16 {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct FrameSpec {
     /// Path to a captured ANSI snapshot (relative to the config file).
@@ -185,6 +215,26 @@ impl FrameSpec {
     }
 }
 
+impl EncodeConfig {
+    /// Every user-supplied pixel size must be one this font can draw exactly.
+    pub fn check_font_sizes(&self) -> Result<()> {
+        check_pixel_size(self.font, "font_px", self.font_px)?;
+        check_pixel_size(self.font, "card_font_px", self.card_font_px)?;
+        check_pixel_size(self.font, "card_subtitle_px", self.card_subtitle_px)?;
+        for f in &self.frames {
+            if let Some(c) = &f.card {
+                if let Some(px) = c.font_px {
+                    check_pixel_size(self.font, "card.font_px", px)?;
+                }
+                if let Some(px) = c.subtitle_px {
+                    check_pixel_size(self.font, "card.subtitle_px", px)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 // --- record -----------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -194,6 +244,11 @@ pub struct RecordConfig {
     pub launch: String,
     pub cols: u32,
     pub rows: u32,
+    /// Which bundled font family to draw with: `"jetbrains"` (default, an outline
+    /// font, exact at any size) or `"smalti"` (a pixel font, exact only at whole
+    /// multiples of 16px — see `check_pixel_size`).
+    #[serde(default)]
+    pub font: crate::raster::FontStack,
     /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
@@ -392,6 +447,24 @@ impl RecordConfig {
                      could only be ignored.\n\
                      remove the `await`, or remove `realtime`"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    /// Every user-supplied pixel size must be one this font can draw exactly.
+    pub fn check_font_sizes(&self) -> Result<()> {
+        check_pixel_size(self.font, "font_px", self.font_px)?;
+        check_pixel_size(self.font, "card_font_px", self.card_font_px)?;
+        check_pixel_size(self.font, "card_subtitle_px", self.card_subtitle_px)?;
+        for s in &self.scenes {
+            if let Some(c) = &s.card {
+                if let Some(px) = c.font_px {
+                    check_pixel_size(self.font, "card.font_px", px)?;
+                }
+                if let Some(px) = c.subtitle_px {
+                    check_pixel_size(self.font, "card.subtitle_px", px)?;
+                }
             }
         }
         Ok(())
@@ -726,5 +799,99 @@ mod tests {
             "##,
         );
         assert!(e.is_err());
+    }
+
+    #[test]
+    fn font_defaults_to_jetbrains_and_accepts_smalti() {
+        let d: EncodeConfig =
+            toml::from_str("cols = 80\nrows = 24\n[[frame]]\nfile = \"a.ansi\"\n")
+                .expect("parses without a font key");
+        assert_eq!(d.font, crate::raster::FontStack::JetBrainsMono);
+
+        let s: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 32\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .expect("parses with font = smalti");
+        assert_eq!(s.font, crate::raster::FontStack::Smalti);
+    }
+
+    #[test]
+    fn an_unknown_font_name_is_rejected() {
+        let e = toml::from_str::<EncodeConfig>(
+            "cols = 80\nrows = 24\nfont = \"comic-sans\"\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .expect_err("an unknown font must not parse");
+        assert!(
+            e.to_string().contains("comic-sans"),
+            "error should name the bad value, got: {e}"
+        );
+    }
+
+    #[test]
+    fn smalti_rejects_a_size_that_is_not_a_multiple_of_sixteen() {
+        let cfg: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 18\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .unwrap();
+        let e = cfg
+            .check_font_sizes()
+            .expect_err("18 is not a multiple of 16");
+        let m = e.to_string();
+        assert!(m.contains("font_px"), "names the key: {m}");
+        assert!(
+            m.contains("16") && m.contains("32"),
+            "offers both neighbours: {m}"
+        );
+    }
+
+    #[test]
+    fn smalti_rejects_a_bad_card_size_and_names_that_key() {
+        let cfg: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 32\ncard_font_px = 44\n\
+             card_subtitle_px = 16\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .unwrap();
+        let m = cfg
+            .check_font_sizes()
+            .expect_err("44 is invalid")
+            .to_string();
+        assert!(m.contains("card_font_px"), "names the key: {m}");
+        assert!(
+            m.contains("32") && m.contains("48"),
+            "offers both neighbours: {m}"
+        );
+    }
+
+    #[test]
+    fn smalti_rejects_a_per_card_override() {
+        let cfg: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 32\ncard_font_px = 32\n\
+             card_subtitle_px = 16\n[[frame]]\n[frame.card]\nlines = [\"hi\"]\nfont_px = 40\n",
+        )
+        .unwrap();
+        let m = cfg
+            .check_font_sizes()
+            .expect_err("40 is invalid")
+            .to_string();
+        assert!(m.contains("card.font_px"), "names the per-card key: {m}");
+    }
+
+    #[test]
+    fn smalti_accepts_valid_sizes() {
+        let cfg: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 32\ncard_font_px = 48\n\
+             card_subtitle_px = 16\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .unwrap();
+        cfg.check_font_sizes().expect("all multiples of 16");
+    }
+
+    /// The outline font is exact at any size — validation must not touch it.
+    #[test]
+    fn jetbrains_accepts_the_existing_defaults() {
+        let cfg: EncodeConfig =
+            toml::from_str("cols = 80\nrows = 24\n[[frame]]\nfile = \"a.ansi\"\n").unwrap();
+        cfg.check_font_sizes()
+            .expect("defaults are fine for an outline font");
     }
 }

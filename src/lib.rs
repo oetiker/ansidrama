@@ -49,6 +49,7 @@ pub fn encode(
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
     let cfg: EncodeConfig = toml::from_str(&text).context("parse encode config")?;
+    cfg.check_font_sizes()?;
     if cfg.frames.is_empty() {
         bail!("config has no [[frame]] entries");
     }
@@ -63,10 +64,10 @@ pub fn encode(
     if let Some(d) = dump_png {
         std::fs::create_dir_all(d).ok();
     }
-    let renderer = Renderer::new(cfg.font_px);
+    let renderer = Renderer::new(cfg.font_px, cfg.font);
     let cell_h = renderer.cell_size().1;
     let chrome = match &cfg.chrome {
-        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0), cfg.font).context("chrome config")?,
         None => Chrome::disabled(),
     };
     let min_cs = crate::config::min_hold_cs(cfg.max_fps);

@@ -55,7 +55,7 @@ Configuration is TOML. The
 key is resolved relative to the config file's directory.
 .SS "encode config"
 Top level:
-.BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
+.BR cols ", " rows ", " font ", " font_px ", " card_font_px ", " card_subtitle_px ", "
 .BR max_fps ", " out .
 Each
 .B [[frame]]
@@ -71,7 +71,7 @@ snapshot, relative to the config) or
 .SS "record config"
 Top level:
 .BR launch " (the shell command line), "
-.BR cols ", " rows ", " font_px ", " card_font_px ", " card_subtitle_px ", "
+.BR cols ", " rows ", " font ", " font_px ", " card_font_px ", " card_subtitle_px ", "
 .BR max_fps ", " out ", " env ", " startup_ms ", "
 .BR sample_ms ", " change_ms ", " stable_ms ", " persist_ms ", "
 .BR wait_cap_ms ", " await_ms ", " realtime ", " max_capture_mb ", "
@@ -183,7 +183,7 @@ parse.
 A
 .B card
 is a silent\-movie intertitle:
-.BR text " (or " lines "), " fg ", " bg ", " bold ", " border ", " font_px ", " subtitle_px .
+.BR text " (or " lines "), " fg ", " bg ", " bold ", " italic ", " border ", " font_px ", " subtitle_px .
 Colours are \fI#rrggbb\fR, \fI#rgb\fR, or a basic name (black white red green
 blue yellow grey).
 .SS "window chrome"

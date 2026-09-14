@@ -443,7 +443,7 @@ fn dump_failure_screen(
     // now" means, and it is the same screen whose text the error already
     // quotes — the picture must not disagree with the words.
     let state = acc.newest()?;
-    let renderer = Renderer::new(cfg.font_px);
+    let renderer = Renderer::new(cfg.font_px, cfg.font);
     let mut img = renderer.render(&state.grid, cfg.cols, cfg.rows);
     if cfg.cursor {
         if let Some((cx, cy)) = state.caret {
@@ -457,6 +457,7 @@ fn dump_failure_screen(
                     fg: (0, 0, 0),
                     bg: (255, 255, 255),
                     bold: false,
+                    italic: false,
                 });
             renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
         }
@@ -472,6 +473,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
     let cfg: RecordConfig = toml::from_str(&text).context("parse record config")?;
+    cfg.check_font_sizes()?;
     if cfg.scenes.is_empty() {
         bail!("config has no [[scene]] entries");
     }
@@ -539,10 +541,10 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let specs = assemble(&state_times, end, &rec.marks, rec.min_cs);
 
     // --- render --------------------------------------------------------
-    let renderer = Renderer::new(cfg.font_px);
+    let renderer = Renderer::new(cfg.font_px, cfg.font);
     let cell_h = renderer.cell_size().1;
     let chrome = match &cfg.chrome {
-        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0), cfg.font).context("chrome config")?,
         None => Chrome::disabled(),
     };
     let mut frames: Vec<Frame> = Vec::with_capacity(specs.len());
@@ -609,6 +611,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
                             fg: (0, 0, 0),
                             bg: (255, 255, 255),
                             bold: false,
+                            italic: false,
                         });
                     renderer.draw_block_cursor(&mut img, cx + 1, cy + 1, &cell);
                 }

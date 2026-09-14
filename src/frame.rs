@@ -34,5 +34,16 @@ pub fn render_card(
     let (w, h) = r.frame_size(cols, rows);
     let tpx = card.font_px.unwrap_or(title_px);
     let spx = card.subtitle_px.unwrap_or(subtitle_px);
-    Ok(r.render_card(w, h, &lines, fg, bg, card.bold, card.border, tpx, spx))
+    Ok(r.render_card(
+        w,
+        h,
+        &lines,
+        fg,
+        bg,
+        card.bold,
+        card.italic,
+        card.border,
+        tpx,
+        spx,
+    ))
 }

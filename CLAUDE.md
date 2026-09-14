@@ -1,15 +1,5 @@
 # ansidrama — working notes for Claude
 
-## Session handover rule
-
-At ~25% context, roll over to a fresh session using the `controller-handoff`
-skill, which writes and commits `docs/controller-handoff.md`. At session
-start, run `git worktree list` first, then read the handoff belonging to the
-workstream you are resuming.
-
-(This replaces an earlier `docs/HANDOVER.md` rule, which the global
-instructions supersede.)
-
 ## Before starting work
 
 - Always `git pull` before starting work so you're on the latest `main`.

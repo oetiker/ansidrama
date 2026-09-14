@@ -1,0 +1,15 @@
+cols = 46
+rows = 10
+font_px = 18
+card_font_px = 44
+card_subtitle_px = 22
+out = "baseline.gif"
+
+[[frame]]
+file = "fixture.ansi"
+hold_cs = 100
+
+[[frame]]
+hold_cs = 100
+[frame.card]
+lines = ["ansidrama", "a regression baseline"]

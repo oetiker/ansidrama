@@ -47,6 +47,7 @@ assets = [
     ["assets/JetBrainsMono-LICENSE.txt", "usr/share/doc/ansidrama/JetBrainsMono-LICENSE.txt", "644"],
     ["assets/SymbolsNerdFont-LICENSE.txt", "usr/share/doc/ansidrama/SymbolsNerdFont-LICENSE.txt", "644"],
     ["assets/JuliaMono-LICENSE.txt", "usr/share/doc/ansidrama/JuliaMono-LICENSE.txt", "644"],
+    ["assets/Smalti-LICENSE.txt", "usr/share/doc/ansidrama/Smalti-LICENSE.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -60,4 +61,5 @@ assets = [
     { source = "assets/JetBrainsMono-LICENSE.txt", dest = "/usr/share/doc/ansidrama/JetBrainsMono-LICENSE.txt", mode = "644", doc = true },
     { source = "assets/SymbolsNerdFont-LICENSE.txt", dest = "/usr/share/doc/ansidrama/SymbolsNerdFont-LICENSE.txt", mode = "644", doc = true },
     { source = "assets/JuliaMono-LICENSE.txt", dest = "/usr/share/doc/ansidrama/JuliaMono-LICENSE.txt", mode = "644", doc = true },
+    { source = "assets/Smalti-LICENSE.txt", dest = "/usr/share/doc/ansidrama/Smalti-LICENSE.txt", mode = "644", doc = true },
 ]

@@ -435,6 +435,7 @@ mod acc_tests {
             fg: (0, 0, 0),
             bg: (0, 0, 0),
             bold: false,
+            italic: false,
         }
     }
     fn g(ch: char) -> Vec<Vec<Cell>> {

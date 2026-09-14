@@ -15,6 +15,7 @@ pub struct Cell {
     pub fg: Rgb,
     pub bg: Rgb,
     pub bold: bool,
+    pub italic: bool,
 }
 
 // --- ANSI capture → grid ----------------------------------------------------
@@ -41,6 +42,7 @@ struct Sgr {
     fg: Col,
     bg: Col,
     bold: bool,
+    italic: bool,
     reverse: bool,
 }
 
@@ -50,6 +52,7 @@ impl Sgr {
             fg: Col::Default,
             bg: Col::Default,
             bold: false,
+            italic: false,
             reverse: false,
         }
     }
@@ -63,6 +66,8 @@ fn apply_sgr(state: &mut Sgr, params: &[i64]) {
             0 => *state = Sgr::reset(),
             1 => state.bold = true,
             22 => state.bold = false,
+            3 => state.italic = true,
+            23 => state.italic = false,
             7 => state.reverse = true,
             27 => state.reverse = false,
             30..=37 => state.fg = palette16((p - 30) as u8),
@@ -162,6 +167,7 @@ pub fn parse_grid(input: &str) -> Vec<Vec<Cell>> {
             fg: resolve(fg, DEF_FG),
             bg: resolve(bg, DEF_BG),
             bold: state.bold,
+            italic: state.italic,
         });
     }
     if rows.last().is_some_and(|r| r.is_empty()) {
@@ -197,5 +203,23 @@ mod tests {
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].len(), 2);
         assert_eq!(g[1][1].ch, 'd');
+    }
+
+    /// SGR 3 turns italic on, 23 turns it off, 0 resets it with everything else.
+    /// Before this existed, italic text recorded as upright — a fidelity bug for
+    /// any capture of Claude Code, bat, or a man page.
+    #[test]
+    fn sgr_italic_sets_clears_and_resets() {
+        let g = parse_grid("\x1b[3mA\x1b[23mB\x1b[3mC\x1b[0mD");
+        let flags: Vec<bool> = g[0].iter().take(4).map(|c| c.italic).collect();
+        assert_eq!(flags, vec![true, false, true, false]);
+    }
+
+    /// Italic and bold are independent attributes.
+    #[test]
+    fn bold_and_italic_combine() {
+        let g = parse_grid("\x1b[1;3mX");
+        assert!(g[0][0].bold, "bold");
+        assert!(g[0][0].italic, "italic");
     }
 }
