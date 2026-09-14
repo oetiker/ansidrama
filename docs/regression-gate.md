@@ -60,8 +60,11 @@ CARGO_BUILD_JOBS=4 cargo run --manifest-path ../../../Cargo.toml -- \
 sha256sum /scratch/oetiker/claude-tmp/after.gif
 ```
 
-**Expected:** `811131379c52f98ae3951e0e03e5015c19d14bc060ed2ccb9734f64929049dbc`,
-368x180px, 2 frames — as measured against the encoder built at commit
+**Expected:** `0fa77e4bd96b32b4cbec192dd184b40a91ead00db0df0ae1eb4cc1db97582ea5`,
+368x180px, 2 frames — re-baselined after the box-drawing painter was
+completed (see Run 2 below). The previous value was
+`811131379c52f98ae3951e0e03e5015c19d14bc060ed2ccb9734f64929049dbc`, measured
+against the encoder built at commit
 `543c115f9c8a08f2487472800acbfeed414f38c0` (the tip of `feat/smalti-font`
 just before this gate was documented). The hash is a property of the
 encoder binary, not of the fixture alone: a legitimate future change to the
@@ -238,3 +241,33 @@ gate's run log: a gate that has only ever reported success is worth
 watching, not yet worth trusting blindly — the value here is in *having*
 a committed, reproducible baseline for the next time Tasks 3-7's
 neighbourhood is touched, not in this one green run.
+
+### Run 2 — 2026-09-14, found a bug
+
+**Change under test:** completing `box_spec` — rounded corners (`╭ ╮ ╯ ╰`),
+the heavy family, and the light/heavy mixed junctions, plus a per-arm
+painter to draw them. None of that touches the light or double families
+the fixture uses, so the hash was expected to hold.
+
+It did not. One pixel moved, in frame 0 only: `(52,117)`, which is cell
+(col 6, row 6) at offset `(4,9)` — exactly `(mx, my)`, the centre of a
+`┘`.
+
+**The bug it found was older than the change.** `draw_box` ended a rule
+with no far-side arm at `xcs.max() + T / 2`, which is the centre column
+itself when `T = 1`, rather than past the far edge of the crossing band.
+With neither a right nor a down arm, *both* of `┘`'s rules stopped one
+pixel short, so the corner pixel where they should meet was never painted
+and the glyph was two disjoint strokes. Only the up+left corners are
+affected: `┘ ╝ ╛ ╜`. The fixture contains `┘`, which is why the gate saw
+it; it contains `╬`, not `╝`, so the double cases went unnoticed.
+
+Fixed by ending such a rule at `max - T / 2 + T`. Re-running after that
+fix gives the same hash as before it, confirming the double family in the
+fixture (`═ ║ ╬`) is untouched and `┘` is the only movement.
+
+Covered from now on by `raster::tests::corners_have_no_hole_where_the_arms_meet`,
+which flood-fills each corner and asserts it is one connected stroke. The
+first version of that test asserted only that every painted pixel had a
+painted neighbour; it passed against the injected bug, because two disjoint
+segments each satisfy that. Fault injection is what caught the weak test.

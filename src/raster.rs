@@ -315,7 +315,7 @@ impl Renderer {
         let (ux, uy) = (x0 as u32, y0 as u32);
         // Re-draw the glyph in the cell's background colour, over the block.
         if let Some(spec) = box_spec(ch) {
-            self.draw_box(img, ux, uy, spec, bg);
+            self.draw_box(img, ux, uy, spec, is_rounded(ch), bg);
         } else if !self.draw_block(img, ux, uy, ch, bg) {
             let font = self.face(cell.bold, cell.italic);
             self.blit_glyph(
@@ -355,7 +355,7 @@ impl Renderer {
                     continue;
                 }
                 if let Some(spec) = box_spec(cell.ch) {
-                    self.draw_box(&mut img, x0, y0, spec, cell.fg);
+                    self.draw_box(&mut img, x0, y0, spec, is_rounded(cell.ch), cell.fg);
                     continue;
                 }
                 if self.draw_block(&mut img, x0, y0, cell.ch, cell.fg) {
@@ -570,14 +570,32 @@ impl Renderer {
     }
 
     /// Paint a box-drawing line char as exact rectangles. `spec` is the weight of
-    /// each arm `[up, right, down, left]` — 0 = none, 1 = single, 2 = double.
-    fn draw_box(&self, img: &mut RgbaImage, x0: u32, y0: u32, spec: [u8; 4], fg: Rgb) {
-        const T: i32 = 1; // stroke thickness (1px, like a real terminal)
+    /// each arm `[up, right, down, left]` — 0 = none, 1 = light, 2 = double,
+    /// 3 = heavy — and `rounded` turns the join into a quarter arc.
+    ///
+    /// Three shapes, because they are genuinely different: an arc, two parallel
+    /// rules per axis (double), or one rule per arm (light and heavy, which may
+    /// differ on the same axis).
+    fn draw_box(
+        &self,
+        img: &mut RgbaImage,
+        x0: u32,
+        y0: u32,
+        spec: [u8; 4],
+        rounded: bool,
+        fg: Rgb,
+    ) {
+        const T: i32 = 1; // light stroke thickness (1px, like a real terminal)
+        const HEAVY: u8 = 3; // arm weight that paints a double-thickness rule
         const OFF: i32 = 2; // double-stroke offset from the centre line
         let [up, right, down, left] = spec;
         let (cw, ch) = (self.cell_w as i32, self.cell_h as i32);
         let (mx, my) = (cw / 2, ch / 2);
         let color = Rgba([fg.0, fg.1, fg.2, 255]);
+        if rounded {
+            self.draw_rounded_corner(img, x0, y0, spec, T, fg);
+            return;
+        }
         let mut rect = |xa: i32, xb: i32, ya: i32, yb: i32| {
             for yy in ya.max(0)..yb.min(ch) {
                 for xx in xa.max(0)..xb.min(cw) {
@@ -585,6 +603,40 @@ impl Renderer {
                 }
             }
         };
+        if !spec.contains(&2) {
+            // Light and heavy arms only. Each arm is its own rectangle, because a
+            // single cell may carry different weights on the same axis (`╼ ╽ ╾ ╿`
+            // and the `┞ ┟ ┡ ┢` family) — one shared rule per axis cannot say that.
+            // Every arm runs into the junction box, so a light arm meeting a heavy
+            // one leaves no gap. Pure-light cells come out pixel-identical to the
+            // shared-rule code this replaced.
+            let w = |arm: u8| match arm {
+                0 => 0,
+                HEAVY => 2 * T,
+                _ => T,
+            };
+            let (tu, tr, td, tl) = (w(up), w(right), w(down), w(left));
+            // A band of thickness `t` centred on `c` starts here.
+            let band = |c: i32, t: i32| c - t / 2;
+            let (tvert, thoriz) = (tu.max(td), tr.max(tl));
+            let (jx0, jx1) = (band(mx, tvert), band(mx, tvert) + tvert);
+            let (jy0, jy1) = (band(my, thoriz), band(my, thoriz) + thoriz);
+            if tl > 0 {
+                rect(0, jx1.max(mx), band(my, tl), band(my, tl) + tl);
+            }
+            if tr > 0 {
+                rect(jx0.min(mx), cw, band(my, tr), band(my, tr) + tr);
+            }
+            if tu > 0 {
+                rect(band(mx, tu), band(mx, tu) + tu, 0, jy1.max(my));
+            }
+            if td > 0 {
+                rect(band(mx, td), band(mx, td) + td, jy0.min(my), ch);
+            }
+            return;
+        }
+        // At least one double arm: two parallel rules per axis, which the
+        // per-arm model above cannot express.
         let hw = left.max(right); // horizontal weight
         let vw = up.max(down); // vertical weight
         let ycs: &[i32] = match hw {
@@ -608,7 +660,10 @@ impl Renderer {
             let xb = if right > 0 {
                 cw
             } else if !xcs.is_empty() {
-                xcs.iter().max().unwrap() + T / 2
+                // Past the far edge of the vertical band, not up to its centre:
+                // with no right arm, this rule's end *is* the corner, and
+                // stopping at the centre leaves that pixel unpainted.
+                xcs.iter().max().unwrap() - T / 2 + T
             } else {
                 mx
             };
@@ -627,12 +682,81 @@ impl Renderer {
             let yb = if down > 0 {
                 ch
             } else if !ycs.is_empty() {
-                ycs.iter().max().unwrap() + T / 2
+                ycs.iter().max().unwrap() - T / 2 + T
             } else {
                 my
             };
             for &xc in xcs {
                 rect(xc - T / 2, xc - T / 2 + T, ya, yb);
+            }
+        }
+    }
+
+    /// Paint a rounded corner (`╭ ╮ ╯ ╰`) as two straight stubs plus a quarter
+    /// arc, with hard edges and no anti-aliasing.
+    ///
+    /// The arms still leave the cell exactly on the centre lines, so the corner
+    /// tiles against a neighbouring `─`/`│` the same way a sharp one does — the
+    /// curve lives entirely inside the quadrant between the cell centre and the
+    /// two edges the arms use. The radius is cell-relative, so it grows with the
+    /// font instead of staying a fixed pixel count.
+    fn draw_rounded_corner(
+        &self,
+        img: &mut RgbaImage,
+        x0: u32,
+        y0: u32,
+        spec: [u8; 4],
+        t: i32,
+        fg: Rgb,
+    ) {
+        let [up, right, down, left] = spec;
+        let (cw, ch) = (self.cell_w as i32, self.cell_h as i32);
+        let (mx, my) = (cw / 2, ch / 2);
+        let color = Rgba([fg.0, fg.1, fg.2, 255]);
+        // Leave at least one pixel of straight stub on the shorter arm.
+        let r = (mx.min(my) - 1).max(1);
+        // Arc centre sits one radius along each present arm.
+        let cx = if right > 0 { mx + r } else { mx - r };
+        let cy = if down > 0 { my + r } else { my - r };
+        let mut put = |xx: i32, yy: i32| {
+            if (0..cw).contains(&xx) && (0..ch).contains(&yy) {
+                img.put_pixel(x0 + xx as u32, y0 + yy as u32, color);
+            }
+        };
+        // Straight stubs, from where the arc ends out to the cell edge.
+        for k in 0..t {
+            let (sx, sy) = (mx - t / 2 + k, my - t / 2 + k);
+            if right > 0 {
+                for xx in (mx + r)..cw {
+                    put(xx, sy);
+                }
+            }
+            if left > 0 {
+                for xx in 0..=(mx - r) {
+                    put(xx, sy);
+                }
+            }
+            if down > 0 {
+                for yy in (my + r)..ch {
+                    put(sx, yy);
+                }
+            }
+            if up > 0 {
+                for yy in 0..=(my - r) {
+                    put(sx, yy);
+                }
+            }
+        }
+        // Quarter arc, in the quadrant facing away from both arms.
+        let half = t as f32 / 2.0;
+        for yy in 0..ch {
+            for xx in 0..cw {
+                let (dx, dy) = ((xx - cx) as f32, (yy - cy) as f32);
+                let facing = if right > 0 { dx <= 0.0 } else { dx >= 0.0 }
+                    && if down > 0 { dy <= 0.0 } else { dy >= 0.0 };
+                if facing && (dx.hypot(dy) - r as f32).abs() <= half {
+                    put(xx, yy);
+                }
             }
         }
     }
@@ -689,7 +813,15 @@ impl Renderer {
 }
 
 /// Arm weights `[up, right, down, left]` for a box-drawing line char: 0 = none,
-/// 1 = single, 2 = double. `None` ⇒ not a handled box char (fall back to font).
+/// 1 = light, 2 = double, 3 = heavy. `None` ⇒ not a handled box char (falls back
+/// to the font, which for a pixel font means a soft, mis-placed glyph — so this
+/// table wants to stay exhaustive).
+///
+/// Covers all of U+2500..U+257F except the dashed (`┄┅┆┇┈┉┊┋╌╍╎╏`) and diagonal
+/// (`╱╲╳`) glyphs, which need a dash pattern and a slope rather than arm weights.
+/// The weights are transcribed from each character's Unicode name, whose grammar
+/// states them directly — e.g. U+2543 "BOX DRAWINGS LEFT UP HEAVY AND RIGHT DOWN
+/// LIGHT" is `[3, 1, 1, 3]`.
 fn box_spec(ch: char) -> Option<[u8; 4]> {
     Some(match ch {
         '─' => [0, 1, 0, 1],
@@ -703,6 +835,12 @@ fn box_spec(ch: char) -> Option<[u8; 4]> {
         '┬' => [0, 1, 1, 1],
         '┴' => [1, 1, 0, 1],
         '┼' => [1, 1, 1, 1],
+        // Rounded corners carry the same arms as the sharp ones; `is_rounded`
+        // is what makes the join a curve instead of a right angle.
+        '╭' => [0, 1, 1, 0],
+        '╮' => [0, 0, 1, 1],
+        '╯' => [1, 0, 0, 1],
+        '╰' => [1, 1, 0, 0],
         '═' => [0, 2, 0, 2],
         '║' => [2, 0, 2, 0],
         '╔' => [0, 2, 2, 0],
@@ -732,8 +870,84 @@ fn box_spec(ch: char) -> Option<[u8; 4]> {
         '╨' => [2, 1, 0, 1],
         '╪' => [1, 2, 1, 2],
         '╫' => [2, 1, 2, 1],
+        '━' => [0, 3, 0, 3],
+        '┃' => [3, 0, 3, 0],
+        '┍' => [0, 3, 1, 0],
+        '┎' => [0, 1, 3, 0],
+        '┏' => [0, 3, 3, 0],
+        '┑' => [0, 0, 1, 3],
+        '┒' => [0, 0, 3, 1],
+        '┓' => [0, 0, 3, 3],
+        '┕' => [1, 3, 0, 0],
+        '┖' => [3, 1, 0, 0],
+        '┗' => [3, 3, 0, 0],
+        '┙' => [1, 0, 0, 3],
+        '┚' => [3, 0, 0, 1],
+        '┛' => [3, 0, 0, 3],
+        '┝' => [1, 3, 1, 0],
+        '┞' => [3, 1, 1, 0],
+        '┟' => [1, 1, 3, 0],
+        '┠' => [3, 1, 3, 0],
+        '┡' => [3, 3, 1, 0],
+        '┢' => [1, 3, 3, 0],
+        '┣' => [3, 3, 3, 0],
+        '┥' => [1, 0, 1, 3],
+        '┦' => [3, 0, 1, 1],
+        '┧' => [1, 0, 3, 1],
+        '┨' => [3, 0, 3, 1],
+        '┩' => [3, 0, 1, 3],
+        '┪' => [1, 0, 3, 3],
+        '┫' => [3, 0, 3, 3],
+        '┭' => [0, 1, 1, 3],
+        '┮' => [0, 3, 1, 1],
+        '┯' => [0, 3, 1, 3],
+        '┰' => [0, 1, 3, 1],
+        '┱' => [0, 1, 3, 3],
+        '┲' => [0, 3, 3, 1],
+        '┳' => [0, 3, 3, 3],
+        '┵' => [1, 1, 0, 3],
+        '┶' => [1, 3, 0, 1],
+        '┷' => [1, 3, 0, 3],
+        '┸' => [3, 1, 0, 1],
+        '┹' => [3, 1, 0, 3],
+        '┺' => [3, 3, 0, 1],
+        '┻' => [3, 3, 0, 3],
+        '┽' => [1, 1, 1, 3],
+        '┾' => [1, 3, 1, 1],
+        '┿' => [1, 3, 1, 3],
+        '╀' => [3, 1, 1, 1],
+        '╁' => [1, 1, 3, 1],
+        '╂' => [3, 1, 3, 1],
+        '╃' => [3, 1, 1, 3],
+        '╄' => [3, 3, 1, 1],
+        '╅' => [1, 1, 3, 3],
+        '╆' => [1, 3, 3, 1],
+        '╇' => [3, 3, 1, 3],
+        '╈' => [1, 3, 3, 3],
+        '╉' => [3, 1, 3, 3],
+        '╊' => [3, 3, 3, 1],
+        '╋' => [3, 3, 3, 3],
+        '╴' => [0, 0, 0, 1],
+        '╵' => [1, 0, 0, 0],
+        '╶' => [0, 1, 0, 0],
+        '╷' => [0, 0, 1, 0],
+        '╸' => [0, 0, 0, 3],
+        '╹' => [3, 0, 0, 0],
+        '╺' => [0, 3, 0, 0],
+        '╻' => [0, 0, 3, 0],
+        '╼' => [0, 3, 0, 1],
+        '╽' => [1, 0, 3, 0],
+        '╾' => [0, 1, 0, 3],
+        '╿' => [3, 0, 1, 0],
         _ => return None,
     })
+}
+
+/// True for the four rounded box corners, whose arms are painted as a quarter
+/// arc rather than a right angle. They carry ordinary single-weight arms in
+/// [`box_spec`], so they tile against `─` and `│` unchanged.
+fn is_rounded(ch: char) -> bool {
+    matches!(ch, '╭' | '╮' | '╯' | '╰')
 }
 
 /// Draw a `t`-pixel-thick rectangle outline `[x0,x1) × [y0,y1)` in `color`.
@@ -926,6 +1140,186 @@ mod tests {
             );
             assert_eq!(i.ascent(), u.ascent(), "{name} ascent");
             assert_eq!(i.descent(), u.descent(), "{name} descent");
+        }
+    }
+
+    /// A rounded corner must still be a *box-drawing* character: hand-painted,
+    /// hard-edged, and leaving the cell on the same centre lines a sharp corner
+    /// uses — otherwise it cannot tile against the `─` and `│` beside it.
+    ///
+    /// This is the regression for the bug that motivated it: `╭ ╮ ╯ ╰` were
+    /// missing from `box_spec`, so they fell through to a fallback face, which
+    /// `draw_fitted` scales to fill the whole cell and centres. That put the
+    /// arms against the cell's outer edges instead of its centre lines, drew
+    /// them anti-aliased, and left the join pixel at partial coverage.
+    #[test]
+    fn rounded_corners_are_hand_painted_and_tile() {
+        let fg = (255u8, 255u8, 255u8);
+        let bg = (0u8, 0u8, 0u8);
+        let cell = |ch| Cell {
+            ch,
+            fg,
+            bg,
+            bold: false,
+            italic: false,
+        };
+        // Both fonts: the corner must not depend on the face carrying the glyph.
+        for stack in [FontStack::Smalti, FontStack::JetBrainsMono] {
+            let r = Renderer::new(16.0, stack);
+            let (cw, ch) = r.cell_size();
+            let (mx, my) = (cw / 2, ch / 2);
+            // `╭` joins a `─` to its right and a `│` below it.
+            let grid = vec![vec![cell('╭'), cell('─')], vec![cell('│'), cell(' ')]];
+            let img = r.render(&grid, 2, 2);
+            let at = |x: u32, y: u32| {
+                let p = img.get_pixel(x, y);
+                (p[0], p[1], p[2])
+            };
+            // Hard edges only — no fallback face, so no anti-aliasing.
+            for (x, y, p) in img.enumerate_pixels() {
+                let got = (p[0], p[1], p[2]);
+                assert!(
+                    got == fg || got == bg,
+                    "pixel at ({x},{y}) is {got:?} — a rounded corner must be                      hand-painted, not drawn from a fallback face ({stack:?})"
+                );
+            }
+            // The arm leaves the right edge on the centre row, where `─` runs…
+            assert_eq!(
+                at(cw - 1, my),
+                fg,
+                "{stack:?}: `╭` must reach the right cell edge on the centre row"
+            );
+            assert_eq!(at(cw, my), fg, "{stack:?}: the `─` beside it must meet it");
+            // …and the bottom edge on the centre column, where `│` runs.
+            assert_eq!(
+                at(mx, ch - 1),
+                fg,
+                "{stack:?}: `╭` must reach the bottom cell edge on the centre column"
+            );
+            assert_eq!(at(mx, ch), fg, "{stack:?}: the `│` below it must meet it");
+            // Actually rounded: the cell's own corner pixel stays empty, which is
+            // what distinguishes `╭` from `┌`.
+            assert_eq!(
+                at(mx, my),
+                bg,
+                "{stack:?}: `╭` must curve away from the corner, not fill it"
+            );
+        }
+    }
+
+    /// Heavy arms must be painted, thicker than light ones, and joined — the
+    /// three things that were wrong when `━ ┃ ┏ ┓ ┗ ┛ …` fell through to the
+    /// font, where the glyph did not reach the cell edges and a heavy rule came
+    /// out dashed.
+    #[test]
+    fn heavy_arms_are_thicker_than_light_and_still_tile() {
+        let fg = (255u8, 255u8, 255u8);
+        let bg = (0u8, 0u8, 0u8);
+        let cell = |ch| Cell {
+            ch,
+            fg,
+            bg,
+            bold: false,
+            italic: false,
+        };
+        for stack in [FontStack::Smalti, FontStack::JetBrainsMono] {
+            let r = Renderer::new(16.0, stack);
+            let (cw, ch) = r.cell_size();
+            let (mx, my) = (cw / 2, ch / 2);
+            let ink = |img: &RgbaImage, x: u32, y: u32| {
+                let p = img.get_pixel(x, y);
+                (p[0], p[1], p[2]) == fg
+            };
+            // A heavy rule is thicker than a light one at the same size.
+            let thickness = |c: char| {
+                let img = r.render(&[vec![cell(c)]], 1, 1);
+                (0..ch).filter(|&y| ink(&img, mx, y)).count()
+            };
+            let (light, heavy) = (thickness('─'), thickness('━'));
+            assert!(
+                heavy > light && light > 0,
+                "{stack:?}: heavy `━` ({heavy}px) must be thicker than light `─` ({light}px)"
+            );
+            // `┏` joins a `━` to its right and a `┃` below it, with no gap and
+            // no anti-aliasing — a heavy rule that reaches neither cell edge is
+            // exactly how the old fallback rendered it: dashed.
+            let grid = vec![vec![cell('┏'), cell('━')], vec![cell('┃'), cell(' ')]];
+            let img = r.render(&grid, 2, 2);
+            for (x, y, p) in img.enumerate_pixels() {
+                let got = (p[0], p[1], p[2]);
+                assert!(
+                    got == fg || got == bg,
+                    "pixel at ({x},{y}) is {got:?} — heavy box drawing must be                      hand-painted, not taken from a face ({stack:?})"
+                );
+            }
+            assert!(
+                ink(&img, cw - 1, my) && ink(&img, cw, my),
+                "{stack:?}: `┏` must meet the `━` beside it"
+            );
+            assert!(
+                ink(&img, mx, ch - 1) && ink(&img, mx, ch),
+                "{stack:?}: `┏` must meet the `┃` below it"
+            );
+        }
+    }
+
+    /// Every corner must actually close. `┘` used to miss the single pixel where
+    /// its two arms meet: with no right or down arm, each rule stopped at the
+    /// centre instead of past the far edge of the other's band, so the corner
+    /// had a hole. Same bug shape as the rounded-corner one, in the oldest code.
+    #[test]
+    fn corners_have_no_hole_where_the_arms_meet() {
+        let fg = (255u8, 255u8, 255u8);
+        let r = Renderer::new(16.0, FontStack::Smalti);
+        let (cw, ch) = r.cell_size();
+        let (mx, my) = (cw / 2, ch / 2);
+        for corner in ['┘', '┌', '┐', '└', '┛', '╝'] {
+            let img = r.render(
+                &[vec![Cell {
+                    ch: corner,
+                    fg,
+                    bg: (0, 0, 0),
+                    bold: false,
+                    italic: false,
+                }]],
+                1,
+                1,
+            );
+            // Flood-fill from one painted pixel: a corner is one connected
+            // stroke, so every painted pixel must be reachable from any other.
+            // (Checking that each pixel merely has a painted neighbour is not
+            // enough — it passes happily for two disjoint segments.)
+            let on = |x: i32, y: i32| {
+                (0..cw as i32).contains(&x) && (0..ch as i32).contains(&y) && {
+                    let p = img.get_pixel(x as u32, y as u32);
+                    (p[0], p[1], p[2]) == fg
+                }
+            };
+            let painted: Vec<(i32, i32)> = (0..ch as i32)
+                .flat_map(|y| (0..cw as i32).map(move |x| (x, y)))
+                .filter(|&(x, y)| on(x, y))
+                .collect();
+            assert!(!painted.is_empty(), "`{corner}` painted nothing at all");
+            let mut seen = vec![painted[0]];
+            let mut queue = vec![painted[0]];
+            while let Some((x, y)) = queue.pop() {
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let n = (x + dx, y + dy);
+                    if on(n.0, n.1) && !seen.contains(&n) {
+                        seen.push(n);
+                        queue.push(n);
+                    }
+                }
+            }
+            assert_eq!(
+                seen.len(),
+                painted.len(),
+                "`{corner}`: {} of its {} painted pixels are unreachable from the rest — \
+                 the arms stop short of each other, leaving a hole where they should meet \
+                 (centre is ({mx},{my}))",
+                painted.len() - seen.len(),
+                painted.len()
+            );
         }
     }
 

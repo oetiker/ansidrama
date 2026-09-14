@@ -18,7 +18,9 @@ moves, silent-movie title cards — and every frame is rendered deterministicall
 
 AnsiDrama renders each frame itself: it parses the terminal's ANSI cell grid
 and rasterizes it with a bundled monospace font, hand-painting box-drawing and
-block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
+block glyphs so `─│═┃╋╭▒█…` reach the exact cell edges and tile seamlessly — the
+light, heavy, double and rounded families all come from the painter, not from
+whichever font is in use, so they cannot come out soft or dashed. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
 
 ```mermaid
@@ -381,12 +383,20 @@ That exactness has a price: **every size must be a whole multiple of 16.**
 
 `card_font_px`, `card_subtitle_px` and any per-card override follow the same rule.
 ansidrama refuses to start on a size it cannot draw, and tells you the two nearest
-valid ones. No Smalti size lands near the JetBrains Mono default, so switching fonts
-means choosing a new output resolution — that is inherent to a pixel font, not an
-oversight.
+valid ones. `font_px = 16` is the natural landing spot when converting a script: it
+draws the same 8px-wide cell as the JetBrains Mono default at 18, only two pixels
+shorter per row, so the output keeps its width. Above that the ladder is coarse — 32
+is a straight doubling with nothing in between. That is inherent to a pixel font, not
+an oversight.
+
+The trailer and the little WebP at the top of this README are both drawn in Smalti at
+`font_px = 16` — see [`demo/readme.toml`](demo/readme.toml) and
+[`demo/hello.toml`](demo/hello.toml).
 
 Smalti carries no box-drawing or block glyphs, which costs nothing: ansidrama paints
-those itself so they reach the exact cell edges. It does carry all 256 Braille
+those itself so they reach the exact cell edges. That covers all of U+2500..U+257F
+bar the dashed (`┄┅┆┇┈┉┊┋╌╍╎╏`) and diagonal (`╱╲╳`) glyphs, which still come from a
+fallback face. It does carry all 256 Braille
 patterns, which JetBrains Mono does not. Icons still come from the Nerd Font
 fallback and are anti-aliased, so they look softer than the text around them.
 
