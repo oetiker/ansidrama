@@ -24,6 +24,53 @@ needed its own unit tests in `sampler::acc_tests`
 `a_caret_hidden_past_persist_is_committed`) rather than being provable by
 the gate alone.
 
+## Font baseline gate
+
+A second, unrelated gate, added alongside `font = "smalti"` and rendered
+italic (`SGR 3`). **What it guards:** those two features must not have
+touched the default path — JetBrains Mono, no italic requested — at all.
+Unlike the gate above, this one runs `encode` (deterministic, no PTY), so
+it compares a single sha256 rather than a frame-by-frame PNG diff.
+
+The fixture and config live in the repo, so the gate survives a wiped
+`/scratch`:
+
+- `docs/regression/font-baseline/fixture.ansi` — a capture exercising bold,
+  256-colour, truecolour, reverse video, box-drawing and Braille. It
+  deliberately contains **no** `SGR 3`, so a byte-identical hash is the
+  only acceptable outcome — there is no "it's just italic now slanted"
+  escape hatch for this fixture, unlike for an arbitrary capture that might
+  contain italic.
+- `docs/regression/font-baseline/baseline.toml` — the `encode` config
+  (relative paths; run it from that directory). Uses the default font
+  (`font` unset) at `font_px = 18`, so it never touches the Smalti path
+  either — this is purely a "did Smalti/italic work leak into the outline
+  path" check.
+
+The GIF itself is not committed — it's a couple of `cargo run` seconds
+away and a binary baseline rots (nobody can review *why* a committed GIF
+changed).
+
+**To reproduce:**
+
+```sh
+cd docs/regression/font-baseline
+CARGO_BUILD_JOBS=4 cargo run --manifest-path ../../../Cargo.toml -- \
+  encode baseline.toml -o /scratch/oetiker/claude-tmp/after.gif
+sha256sum /scratch/oetiker/claude-tmp/after.gif
+```
+
+**Expected:** `811131379c52f98ae3951e0e03e5015c19d14bc060ed2ccb9734f64929049dbc`,
+368x180px, 2 frames — as measured against the encoder built at commit
+`543c115f9c8a08f2487472800acbfeed414f38c0` (the tip of `feat/smalti-font`
+just before this gate was documented). The hash is a property of the
+encoder binary, not of the fixture alone: a legitimate future change to the
+default rasterizer (a new font version, a chrome tweak, a title-card
+layout change) will move this hash too, and that is expected — re-baseline
+by re-running the command above and updating both the expected hash and
+the commit it was taken at. What must **not** move it is anything scoped to
+the Smalti or italic code paths, since this fixture exercises neither.
+
 ## Run log
 
 This gate has caught a real bug once already — see Run 1 below. Keep both
@@ -162,3 +209,32 @@ Artifacts:
 
 - `/scratch/oetiker/claude-tmp/claude-1003/-home-oetiker-checkouts-ansidrama/e27b5064-be70-416d-81cd-b237f244fed9/scratchpad/gate/out-new-fixwave/`
 - comparison script: `.../scratchpad/gate/compare-fixwave.sh`
+
+## Font baseline run log
+
+### Run 1 — 2026-09-14, clean
+
+Run at the end of Task 8 of the Smalti-font plan (`font = "smalti"` plus
+rendered italic), to confirm neither leaked into the default JetBrains Mono
+path. Encoder built from this worktree at `543c115f9c8a08f2487472800acbfeed414f38c0`,
+plus the (docs-only, non-functional) changes this same task adds on top.
+
+```sh
+cd docs/regression/font-baseline
+CARGO_BUILD_JOBS=4 cargo run --manifest-path ../../../Cargo.toml -- \
+  encode baseline.toml -o /scratch/oetiker/claude-tmp/after.gif
+sha256sum /scratch/oetiker/claude-tmp/after.gif
+```
+
+Output: `OK: wrote ... (2 frames, 368x180px, 2.0s loop)`.
+
+Hash: `811131379c52f98ae3951e0e03e5015c19d14bc060ed2ccb9734f64929049dbc` —
+**matches the expected value exactly.** No regression: Tasks 3-7 (the
+pixel-font rasterizer, the size-validation rejection, the italic SGR
+handling) did not touch the outline-font path this fixture exercises.
+
+This run log has one entry and it is clean. Per the note above the record
+gate's run log: a gate that has only ever reported success is worth
+watching, not yet worth trusting blindly — the value here is in *having*
+a committed, reproducible baseline for the next time Tasks 3-7's
+neighbourhood is touched, not in this one green run.

@@ -21,6 +21,9 @@ and rasterizes it with a bundled monospace font, hand-painting box-drawing and
 block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
 
+Italic (`SGR 3`) is rendered. Before v0.5.0 it was parsed and discarded, so italic
+text in a capture came out upright.
+
 ```mermaid
 flowchart LR
     A[".ansi snapshots"] -->|parse ANSI grid| B["cell grid<br>Vec&lt;Vec&lt;Cell&gt;&gt;"]
@@ -64,6 +67,7 @@ ansidrama encode demo.toml -o out.webp --dump-png frames/
 launch       = "myapp --config demo.toml"
 cols         = 100
 rows         = 30
+font         = "jetbrains"  # or "smalti" — a pixel font, sizes must be /16
 font_px      = 18         # terminal font (small is fine — it's a dense capture)
 card_font_px = 44         # title-card font (larger — read at a glance)
 max_fps      = 30         # clamp minimum frame duration
@@ -123,6 +127,7 @@ otherwise reuses the last capture.
 | `type_cs` | global + per-scene | hold per key / typed-char frame (typing speed) |
 | `move_cs` | global + per-scene | hold per mouse cell-step frame (pointer speed) |
 | `font_px` | global | terminal font size → cell size → output resolution |
+| `font` | global | `jetbrains` (default) or `smalti`, a bundled pixel font |
 | `card_font_px` | global + per-card | title-card font (cards aren't bound to the cell grid) |
 | `max_fps` | global | clamps the minimum per-frame hold |
 
@@ -358,6 +363,31 @@ text, Symbols Nerd Font for Nerd Font icons (the Private Use Area codepoints tha
 starship, eza, lazygit and friends draw), and JuliaMono for Unicode's symbol
 blocks — arrows, geometric shapes, dingbats, braille. A codepoint none of them
 has draws a visible box rather than nothing at all.
+
+### The pixel font
+
+`font = "smalti"` swaps JetBrains Mono for [Smalti](https://github.com/oetiker/smalti)
+8x16, a pixel font derived from Tamzen. Glyphs are reproduced exactly — hard edges,
+no anti-aliasing, no grey.
+
+That exactness has a price: **every size must be a whole multiple of 16.**
+
+| `font_px` | cell | 80 columns |
+|---:|---|---:|
+| 16 | 8×16 | 640 px |
+| 32 | 16×32 | 1280 px |
+| 48 | 24×48 | 1920 px |
+
+`card_font_px`, `card_subtitle_px` and any per-card override follow the same rule.
+ansidrama refuses to start on a size it cannot draw, and tells you the two nearest
+valid ones. No Smalti size lands near the JetBrains Mono default, so switching fonts
+means choosing a new output resolution — that is inherent to a pixel font, not an
+oversight.
+
+Smalti carries no box-drawing or block glyphs, which costs nothing: ansidrama paints
+those itself so they reach the exact cell edges. It does carry all 256 Braille
+patterns, which JetBrains Mono does not. Icons still come from the Nerd Font
+fallback and are anti-aliased, so they look softer than the text around them.
 
 ## How it compares
 

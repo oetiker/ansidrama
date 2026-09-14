@@ -9,7 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+- **`font = "smalti"`** selects a bundled 8x16 pixel font, rendered with no
+  anti-aliasing. Sizes must be whole multiples of 16; ansidrama rejects others
+  and names the nearest valid ones.
+
 ### Changed
+
+- **Italic** (`SGR 3`) is now rendered instead of discarded. Captures
+  containing italic text — man pages, `bat`, most TUI help panes, Claude Code —
+  will look different from previous releases, because they were previously
+  wrong.
 
 ### Fixed
 

@@ -1,0 +1,12 @@
+# Smalti, the bundled pixel font. Every size is a multiple of 16.
+cols = 80
+rows = 24
+font = "smalti"
+font_px = 32
+card_font_px = 48
+card_subtitle_px = 16
+
+[[frame]]
+hold_cs = 200
+[frame.card]
+lines = ["ansidrama", "one pixel per pixel"]
