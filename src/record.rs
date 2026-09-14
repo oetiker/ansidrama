@@ -544,7 +544,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let renderer = Renderer::new(cfg.font_px, cfg.font);
     let cell_h = renderer.cell_size().1;
     let chrome = match &cfg.chrome {
-        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,
+        Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0), cfg.font).context("chrome config")?,
         None => Chrome::disabled(),
     };
     let mut frames: Vec<Frame> = Vec::with_capacity(specs.len());

@@ -50,8 +50,14 @@ impl Chrome {
     }
 
     /// Build from config. `cell_h` sizes all chrome metrics; `term_bg` fills the
-    /// padding (the terminal background).
-    pub fn from_config(cfg: &ChromeConfig, cell_h: u32, term_bg: Rgb) -> Result<Self> {
+    /// padding (the terminal background); `font` decides whether the derived
+    /// title size must snap to a drawable step.
+    pub fn from_config(
+        cfg: &ChromeConfig,
+        cell_h: u32,
+        term_bg: Rgb,
+        font: crate::raster::FontStack,
+    ) -> Result<Self> {
         let bar = color::parse(&cfg.bar)
             .map_err(anyhow::Error::msg)
             .context("chrome `bar`")?;
@@ -75,13 +81,18 @@ impl Chrome {
             dot_d: (0.42 * bar_h as f32).round() as u32,
             dot_gap: (0.20 * bar_h as f32).round() as u32,
             inset: (0.55 * bar_h as f32).round() as u32,
-            title_px: 0.52 * bar_h as f32,
+            title_px: snap_title_px(0.52 * bar_h as f32, font),
         })
     }
 
     /// True when matting changes the image (else callers can skip it).
     pub fn is_active(&self) -> bool {
         self.bar_h > 0 || self.padding > 0
+    }
+
+    /// The resolved title font size in pixels.
+    pub(crate) fn title_px(&self) -> f32 {
+        self.title_px
     }
 
     /// Wrap `content` in the chrome, returning the final image (larger, and for
@@ -112,7 +123,7 @@ impl Chrome {
                     cx += self.dot_d as f32 + self.dot_gap as f32;
                 }
                 if !self.title.is_empty() {
-                    let (tw, asc, lh) = r.text_extents(&self.title, self.title_px);
+                    let (tw, asc, lh) = r.text_extents(&self.title, self.title_px());
                     let x = (out_w as f32 - tw) / 2.0;
                     let baseline = (self.bar_h as f32 - lh) / 2.0 + asc;
                     r.draw_text(
@@ -120,7 +131,7 @@ impl Chrome {
                         x,
                         baseline,
                         &self.title,
-                        self.title_px,
+                        self.title_px(),
                         self.text,
                         false,
                         false,
@@ -129,14 +140,14 @@ impl Chrome {
             }
             ChromeStyle::Linux => {
                 if !self.title.is_empty() {
-                    let (_tw, asc, lh) = r.text_extents(&self.title, self.title_px);
+                    let (_tw, asc, lh) = r.text_extents(&self.title, self.title_px());
                     let baseline = (self.bar_h as f32 - lh) / 2.0 + asc;
                     r.draw_text(
                         img,
                         self.inset as f32,
                         baseline,
                         &self.title,
-                        self.title_px,
+                        self.title_px(),
                         self.text,
                         false,
                         false,
@@ -161,6 +172,20 @@ impl Chrome {
             ChromeStyle::Linux => round_corners(img, self.corner, true),
             ChromeStyle::None => {}
         }
+    }
+}
+
+/// The chrome title size is derived from the bar height, not configured, so an
+/// invalid value cannot be reported to anyone — it is rounded instead.
+///
+/// Down, not to-nearest: at cell_h = 32 the raw size is 26, and rounding that up
+/// to 32 would make the title taller than the 50-pixel bar around it. The floor of
+/// one step means the smallest sizes get a title that fills more of the bar than
+/// it does higher up the ladder.
+fn snap_title_px(px: f32, font: crate::raster::FontStack) -> f32 {
+    match font.pixel_step() {
+        None => px,
+        Some(step) => ((px / step).floor() * step).max(step),
     }
 }
 
@@ -300,7 +325,13 @@ mod tests {
     fn none_pads_with_term_bg_opaque() {
         let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
-        let ch = Chrome::from_config(&cfg(ChromeStyle::None, 6), cell_h, (0, 0, 0)).unwrap();
+        let ch = Chrome::from_config(
+            &cfg(ChromeStyle::None, 6),
+            cell_h,
+            (0, 0, 0),
+            FontStack::JetBrainsMono,
+        )
+        .unwrap();
         let out = ch.matte(&r, &content((10, 20, 30)));
         assert_eq!(out.dimensions(), (200 + 12, 30 + 12));
         assert_eq!(out.get_pixel(0, 0)[3], 255); // opaque
@@ -321,7 +352,13 @@ mod tests {
     fn macos_has_bar_dots_and_rounded_corners() {
         let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
-        let ch = Chrome::from_config(&cfg(ChromeStyle::Macos, 8), cell_h, (0, 0, 0)).unwrap();
+        let ch = Chrome::from_config(
+            &cfg(ChromeStyle::Macos, 8),
+            cell_h,
+            (0, 0, 0),
+            FontStack::JetBrainsMono,
+        )
+        .unwrap();
         let out = ch.matte(&r, &content((5, 5, 5)));
         let bar_h = (1.55 * cell_h as f32).round() as u32;
         assert_eq!(out.height(), bar_h + 30 + 16);
@@ -335,7 +372,13 @@ mod tests {
     fn linux_rounds_top_only_and_draws_close() {
         let r = Renderer::new(20.0, FontStack::JetBrainsMono);
         let cell_h = r.cell_size().1;
-        let ch = Chrome::from_config(&cfg(ChromeStyle::Linux, 8), cell_h, (0, 0, 0)).unwrap();
+        let ch = Chrome::from_config(
+            &cfg(ChromeStyle::Linux, 8),
+            cell_h,
+            (0, 0, 0),
+            FontStack::JetBrainsMono,
+        )
+        .unwrap();
         let out = ch.matte(&r, &content((5, 5, 5)));
         assert_eq!(out.get_pixel(0, 0)[3], 0); // top rounded
         assert_eq!(out.get_pixel(0, out.height() - 1)[3], 255); // bottom square
@@ -350,5 +393,33 @@ mod tests {
             }
         }
         assert!(found, "close glyph drawn top-right");
+    }
+
+    #[test]
+    fn chrome_title_snaps_down_to_a_drawable_size_for_a_pixel_font() {
+        // cell_h, expected title_px
+        for (cell_h, want) in [(16u32, 16.0_f32), (32, 16.0), (48, 32.0), (64, 48.0)] {
+            let c = Chrome::from_config(
+                &cfg(ChromeStyle::Macos, 8),
+                cell_h,
+                (0, 0, 0),
+                FontStack::Smalti,
+            )
+            .unwrap();
+            assert_eq!(c.title_px(), want, "cell_h = {cell_h}");
+        }
+    }
+
+    #[test]
+    fn chrome_title_is_untouched_for_an_outline_font() {
+        let c = Chrome::from_config(
+            &cfg(ChromeStyle::Macos, 8),
+            24,
+            (0, 0, 0),
+            FontStack::JetBrainsMono,
+        )
+        .unwrap();
+        let bar_h = (1.55 * 24.0_f32).round();
+        assert_eq!(c.title_px(), 0.52 * bar_h);
     }
 }
