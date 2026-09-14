@@ -164,7 +164,11 @@ impl Renderer {
     /// Round to a whole pixel for a pixel font; identity otherwise, so no existing
     /// outline-font render moves.
     fn snap(&self, v: f32) -> f32 {
-        if self.is_pixel_exact() { v.round() } else { v }
+        if self.is_pixel_exact() {
+            v.round()
+        } else {
+            v
+        }
     }
 
     /// The first fallback face carrying `ch`, if any.
@@ -524,10 +528,9 @@ impl Renderer {
         // A pixel font must land on integer pixels here too, or free-size text
         // (title cards, chrome titles) grows the same anti-aliased seam the
         // cell-grid path avoids by construction.
-        let glyph = font.glyph_id(ch).with_scale_and_position(
-            scale,
-            ab_glyph::point(self.snap(x), self.snap(baseline)),
-        );
+        let glyph = font
+            .glyph_id(ch)
+            .with_scale_and_position(scale, ab_glyph::point(self.snap(x), self.snap(baseline)));
         if let Some(outline) = font.outline_glyph(glyph) {
             let b = outline.px_bounds();
             let (iw, ih) = (img.width() as i32, img.height() as i32);
@@ -894,7 +897,11 @@ mod tests {
         let f = FontRef::try_from_slice(FONT_SMALTI_REGULAR).expect("smalti parses");
         let em = 1024.0_f32; // scale so one em == 1024px, i.e. font units
         let s = f.as_scaled(PxScale::from(em));
-        assert_eq!(s.h_advance(f.glyph_id('M')), em / 2.0, "advance must be half an em");
+        assert_eq!(
+            s.h_advance(f.glyph_id('M')),
+            em / 2.0,
+            "advance must be half an em"
+        );
         assert_eq!(s.ascent() - s.descent(), em, "line must be exactly one em");
         assert_eq!(s.line_gap(), 0.0, "line gap must be zero");
     }
@@ -912,7 +919,11 @@ mod tests {
         ] {
             let it = FontRef::try_from_slice(bytes).expect("italic parses");
             let i = it.as_scaled(PxScale::from(1000.0));
-            assert_eq!(i.h_advance(it.glyph_id('M')), u.h_advance(up.glyph_id('M')), "{name} advance");
+            assert_eq!(
+                i.h_advance(it.glyph_id('M')),
+                u.h_advance(up.glyph_id('M')),
+                "{name} advance"
+            );
             assert_eq!(i.ascent(), u.ascent(), "{name} ascent");
             assert_eq!(i.descent(), u.descent(), "{name} descent");
         }
@@ -945,7 +956,13 @@ mod tests {
         let text = "Hello, Smalti! 0123 gjpqy";
         let grid: Vec<Vec<Cell>> = vec![text
             .chars()
-            .map(|ch| Cell { ch, fg, bg, bold: false, italic: false })
+            .map(|ch| Cell {
+                ch,
+                fg,
+                bg,
+                bold: false,
+                italic: false,
+            })
             .collect()];
         let img = r.render(&grid, text.chars().count() as u32, 1);
         for (x, y, p) in img.enumerate_pixels() {
@@ -994,9 +1011,18 @@ mod tests {
         let r = Renderer::new(32.0, FontStack::Smalti);
         let mut seen: Vec<Vec<u8>> = Vec::new();
         for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
-            let c = Cell { ch: 'm', fg: (255, 255, 255), bg: (0, 0, 0), bold, italic };
+            let c = Cell {
+                ch: 'm',
+                fg: (255, 255, 255),
+                bg: (0, 0, 0),
+                bold,
+                italic,
+            };
             let img = r.render(&[vec![c]], 1, 1).as_raw().clone();
-            assert!(!seen.contains(&img), "face (bold={bold}, italic={italic}) duplicates another");
+            assert!(
+                !seen.contains(&img),
+                "face (bold={bold}, italic={italic}) duplicates another"
+            );
             seen.push(img);
         }
     }

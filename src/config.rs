@@ -803,10 +803,9 @@ mod tests {
 
     #[test]
     fn font_defaults_to_jetbrains_and_accepts_smalti() {
-        let d: EncodeConfig = toml::from_str(
-            "cols = 80\nrows = 24\n[[frame]]\nfile = \"a.ansi\"\n",
-        )
-        .expect("parses without a font key");
+        let d: EncodeConfig =
+            toml::from_str("cols = 80\nrows = 24\n[[frame]]\nfile = \"a.ansi\"\n")
+                .expect("parses without a font key");
         assert_eq!(d.font, crate::raster::FontStack::JetBrainsMono);
 
         let s: EncodeConfig = toml::from_str(
