@@ -482,11 +482,11 @@ impl Renderer {
             .collect();
 
         let block_h: f32 = per_line.iter().map(|m| m.3).sum();
-        let mut y = (h as f32 - block_h) / 2.0;
+        let mut y = self.snap((h as f32 - block_h) / 2.0);
         for (line, &(px, adv, asc, line_h)) in lines.iter().zip(&per_line) {
             let text_w = line.chars().count() as f32 * adv;
-            let mut x = (w as f32 - text_w) / 2.0;
-            let baseline = y + asc;
+            let mut x = self.snap((w as f32 - text_w) / 2.0);
+            let baseline = self.snap(y + asc);
             for ch in line.chars() {
                 self.blit_glyph(&mut img, font, ch, x, baseline, PxScale::from(px), fg);
                 x += adv;
@@ -970,6 +970,26 @@ mod tests {
             assert!(
                 got == fg || got == bg,
                 "pixel at ({x},{y}) is {got:?} — neither fg nor bg, so anti-aliasing crept in"
+            );
+        }
+    }
+
+    /// A card is centred with float arithmetic, so its text origins land on
+    /// half-pixels about half the time — which puts the anti-aliasing straight
+    /// back. Same property as the grid test, one path further out.
+    #[test]
+    fn smalti_cards_render_with_no_anti_aliasing() {
+        let r = Renderer::new(32.0, FontStack::Smalti);
+        let fg = (255u8, 255u8, 255u8);
+        let bg = (0u8, 0u8, 0u8);
+        // An odd character count and an odd width both force a fractional centre.
+        let lines = vec!["ansidrama".to_string(), "a pixel card".to_string()];
+        let img = r.render_card(641, 385, &lines, fg, bg, false, false, true, 48.0, 16.0);
+        for (x, y, p) in img.enumerate_pixels() {
+            let got = (p[0], p[1], p[2]);
+            assert!(
+                got == fg || got == bg,
+                "card pixel at ({x},{y}) is {got:?} — neither fg nor bg"
             );
         }
     }
