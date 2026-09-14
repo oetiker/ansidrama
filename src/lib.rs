@@ -37,7 +37,7 @@ pub mod term;
 use crate::chrome::Chrome;
 use crate::config::{EncodeConfig, FrameSource};
 use crate::encode::{encode_webp, total_ms, Frame};
-use crate::raster::{FontStack, Renderer};
+use crate::raster::Renderer;
 
 /// Run the `encode` command: build frames from an `encode.toml` (captured `.ansi`
 /// files and/or synthetic cards) and write an animated WebP.
@@ -63,7 +63,7 @@ pub fn encode(
     if let Some(d) = dump_png {
         std::fs::create_dir_all(d).ok();
     }
-    let renderer = Renderer::new(cfg.font_px, FontStack::JetBrainsMono);
+    let renderer = Renderer::new(cfg.font_px, cfg.font);
     let cell_h = renderer.cell_size().1;
     let chrome = match &cfg.chrome {
         Some(c) => Chrome::from_config(c, cell_h, (0, 0, 0)).context("chrome config")?,

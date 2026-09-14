@@ -25,7 +25,7 @@ fn default_chrome_text() -> String {
 }
 
 /// A synthetic "silent-movie" title card.
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Card {
     /// Single string; embedded `\n` splits into lines.
@@ -87,7 +87,7 @@ pub enum ChromeStyle {
 }
 
 /// Optional window chrome + padding around the cell grid. Absent ⇒ no change.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ChromeConfig {
     #[serde(default)]
@@ -108,11 +108,16 @@ pub struct ChromeConfig {
 
 // --- encode -----------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct EncodeConfig {
     pub cols: u32,
     pub rows: u32,
+    /// Which bundled font family to draw with: `"jetbrains"` (default, an outline
+    /// font, exact at any size) or `"smalti"` (a pixel font, exact only at whole
+    /// multiples of 16px — see `check_pixel_size`).
+    #[serde(default)]
+    pub font: crate::raster::FontStack,
     /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
@@ -158,7 +163,7 @@ pub fn min_hold_cs(max_fps: u32) -> u16 {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct FrameSpec {
     /// Path to a captured ANSI snapshot (relative to the config file).
@@ -197,6 +202,11 @@ pub struct RecordConfig {
     pub launch: String,
     pub cols: u32,
     pub rows: u32,
+    /// Which bundled font family to draw with: `"jetbrains"` (default, an outline
+    /// font, exact at any size) or `"smalti"` (a pixel font, exact only at whole
+    /// multiples of 16px — see `check_pixel_size`).
+    #[serde(default)]
+    pub font: crate::raster::FontStack,
     /// Terminal font pixel size — sets the cell size and thus the output resolution.
     #[serde(default = "default_font_px")]
     pub font_px: f32,
@@ -729,5 +739,32 @@ mod tests {
             "##,
         );
         assert!(e.is_err());
+    }
+
+    #[test]
+    fn font_defaults_to_jetbrains_and_accepts_smalti() {
+        let d: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .expect("parses without a font key");
+        assert_eq!(d.font, crate::raster::FontStack::JetBrainsMono);
+
+        let s: EncodeConfig = toml::from_str(
+            "cols = 80\nrows = 24\nfont = \"smalti\"\nfont_px = 32\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .expect("parses with font = smalti");
+        assert_eq!(s.font, crate::raster::FontStack::Smalti);
+    }
+
+    #[test]
+    fn an_unknown_font_name_is_rejected() {
+        let e = toml::from_str::<EncodeConfig>(
+            "cols = 80\nrows = 24\nfont = \"comic-sans\"\n[[frame]]\nfile = \"a.ansi\"\n",
+        )
+        .expect_err("an unknown font must not parse");
+        assert!(
+            e.to_string().contains("comic-sans"),
+            "error should name the bad value, got: {e}"
+        );
     }
 }
