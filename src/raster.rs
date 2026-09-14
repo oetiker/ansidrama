@@ -47,7 +47,7 @@ const FONT_SYMBOLS: &[u8] = include_bytes!("../assets/JuliaMono-Regular.ttf");
 /// Which family of faces a `Renderer` draws text from.
 ///
 /// The two are not interchangeable in one respect: Smalti is a pixel font, exact
-/// only at whole multiples of its 16px design size. `is_pixel_exact` is what the
+/// only at whole multiples of its 16px design size. `pixel_step` is what the
 /// config validator and the free-size text path consult to know that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 pub enum FontStack {
@@ -157,7 +157,7 @@ impl Renderer {
     /// only at whole multiples of the design size. Free-size text must round its
     /// origins to whole pixels when this is true, or sub-pixel positioning puts
     /// the anti-aliasing straight back.
-    pub fn is_pixel_exact(&self) -> bool {
+    fn is_pixel_exact(&self) -> bool {
         self.stack.pixel_step().is_some()
     }
 
@@ -947,6 +947,10 @@ mod tests {
     /// foreground or background pixels. Any intermediate value means a glyph
     /// origin drifted off the integer grid, or the scale stopped being exact.
     /// This one assertion covers the metrics, the scale, and the origin at once.
+    ///
+    /// Checked across all four faces — regular, bold, italic, bold-italic —
+    /// since the no-anti-aliasing claim is about the whole Smalti family, not
+    /// just its regular face.
     #[test]
     fn smalti_renders_with_no_anti_aliasing() {
         let r = Renderer::new(32.0, FontStack::Smalti);
@@ -954,23 +958,26 @@ mod tests {
         let bg = (0u8, 0u8, 0u8);
         // ASCII only, and nothing hand-painted: this must exercise the font path.
         let text = "Hello, Smalti! 0123 gjpqy";
-        let grid: Vec<Vec<Cell>> = vec![text
-            .chars()
-            .map(|ch| Cell {
-                ch,
-                fg,
-                bg,
-                bold: false,
-                italic: false,
-            })
-            .collect()];
-        let img = r.render(&grid, text.chars().count() as u32, 1);
-        for (x, y, p) in img.enumerate_pixels() {
-            let got = (p[0], p[1], p[2]);
-            assert!(
-                got == fg || got == bg,
-                "pixel at ({x},{y}) is {got:?} — neither fg nor bg, so anti-aliasing crept in"
-            );
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let grid: Vec<Vec<Cell>> = vec![text
+                .chars()
+                .map(|ch| Cell {
+                    ch,
+                    fg,
+                    bg,
+                    bold,
+                    italic,
+                })
+                .collect()];
+            let img = r.render(&grid, text.chars().count() as u32, 1);
+            for (x, y, p) in img.enumerate_pixels() {
+                let got = (p[0], p[1], p[2]);
+                assert!(
+                    got == fg || got == bg,
+                    "pixel at ({x},{y}) is {got:?} — neither fg nor bg, so anti-aliasing \
+                     crept in (bold={bold}, italic={italic})"
+                );
+            }
         }
     }
 
