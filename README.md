@@ -21,9 +21,6 @@ and rasterizes it with a bundled monospace font, hand-painting box-drawing and
 block glyphs so `─│═▒█…` reach the exact cell edges and tile seamlessly. The
 result is a lossless, sharp, loopable WebP that stays small — ideal for a README.
 
-Italic (`SGR 3`) is rendered. Before v0.5.0 it was parsed and discarded, so italic
-text in a capture came out upright.
-
 ```mermaid
 flowchart LR
     A[".ansi snapshots"] -->|parse ANSI grid| B["cell grid<br>Vec&lt;Vec&lt;Cell&gt;&gt;"]
@@ -31,6 +28,9 @@ flowchart LR
     B -->|"rasterize (bundled font,<br>hand-painted box / blocks)"| C
     C -->|encode| D["lossless animated<br>WebP (loops)"]
 ```
+
+Italic (`SGR 3`) is rendered. Previously it was parsed and discarded, so italic
+text in a capture came out upright.
 
 ## Two commands
 
@@ -295,13 +295,14 @@ Silent-movie intertitles: a solid panel with centered text inside a double-line
 frame.
 
 ```toml
-card = { text = "Browse. Edit. Save.", fg = "white", bg = "black", bold = true, border = true }
+card = { text = "Browse. Edit. Save.", fg = "white", bg = "black", bold = true, italic = true, border = true }
 # or multi-line:
 card = { lines = ["Chapter one", "the directory tree"] }
 ```
 
 Colours are `#rrggbb`, `#rgb`, or a basic name (`black white red green blue
-yellow grey`). `border` (default `true`) draws the frame.
+yellow grey`). `bold` and `italic` style the text; `border` (default `true`)
+draws the frame.
 
 ## Window chrome & padding (optional)
 
