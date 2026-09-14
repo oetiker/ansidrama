@@ -383,9 +383,15 @@ That exactness has a price: **every size must be a whole multiple of 16.**
 
 `card_font_px`, `card_subtitle_px` and any per-card override follow the same rule.
 ansidrama refuses to start on a size it cannot draw, and tells you the two nearest
-valid ones. No Smalti size lands near the JetBrains Mono default, so switching fonts
-means choosing a new output resolution — that is inherent to a pixel font, not an
-oversight.
+valid ones. `font_px = 16` is the natural landing spot when converting a script: it
+draws the same 8px-wide cell as the JetBrains Mono default at 18, only two pixels
+shorter per row, so the output keeps its width. Above that the ladder is coarse — 32
+is a straight doubling with nothing in between. That is inherent to a pixel font, not
+an oversight.
+
+The trailer and the little WebP at the top of this README are both drawn in Smalti at
+`font_px = 16` — see [`demo/readme.toml`](demo/readme.toml) and
+[`demo/hello.toml`](demo/hello.toml).
 
 Smalti carries no box-drawing or block glyphs, which costs nothing: ansidrama paints
 those itself so they reach the exact cell edges. That covers all of U+2500..U+257F

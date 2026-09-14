@@ -5,7 +5,12 @@
 launch  = "PS1='$ ' bash --norc --noprofile -i"
 cols    = 64
 rows    = 10
-font_px = 18
+# Smalti, the bundled pixel font: every size must be a whole multiple of 16,
+# and 16 gives the same 8x16 cell the old 18px outline font drew into.
+font    = "smalti"
+font_px = 16
+card_font_px     = 48
+card_subtitle_px = 32
 out     = "hello.webp"
 env     = { COLORTERM = "truecolor" }
 startup_ms = 1500 # floor: wait for bash's first prompt before typing (avoids a prompt race)

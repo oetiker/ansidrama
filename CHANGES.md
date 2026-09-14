@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New
 
+### Changed
+
+- The bundled demo scripts (`demo/readme.toml`, `demo/hello.toml`) now record
+  in `font = "smalti"` at `font_px = 16`, so the README recordings show the
+  pixel font. Same width as before, and roughly half the file size.
+
+### New
+
 - **The box-drawing painter now covers all of U+2500..U+257F** except the dashed
   and diagonal glyphs: the heavy family (`━ ┃ ┏ ┓ ┗ ┛ ┣ ┫ ┳ ┻ ╋`), every
   light/heavy mixed junction (`┞ ┡ ╀ ╈ …`), and the half-line stubs (`╴ ╵ ╶ ╷`,

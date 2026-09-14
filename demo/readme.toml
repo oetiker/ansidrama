@@ -5,8 +5,13 @@
 launch  = "PS1='$ ' bash --norc --noprofile -i"
 cols    = 84
 rows    = 22
-font_px = 18
-card_font_px = 40
+# Smalti, the bundled pixel font: every size must be a whole multiple of 16,
+# and 16 gives the same 8x16 cell the old 18px outline font drew into, so the
+# committed WebP keeps its width and renders 1:1 in the README.
+font    = "smalti"
+font_px = 16
+card_font_px     = 64
+card_subtitle_px = 32
 out     = "../docs/demo/ansidrama.webp"
 env     = { COLORTERM = "truecolor" }
 # Pacing is per-scene now, not one global window: each input waits only until
