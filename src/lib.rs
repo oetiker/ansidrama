@@ -49,6 +49,7 @@ pub fn encode(
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
     let cfg: EncodeConfig = toml::from_str(&text).context("parse encode config")?;
+    cfg.check_font_sizes()?;
     if cfg.frames.is_empty() {
         bail!("config has no [[frame]] entries");
     }

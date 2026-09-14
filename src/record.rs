@@ -473,6 +473,7 @@ pub fn run(config_path: &Path, out_override: Option<&Path>, dump_png: Option<&Pa
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("read config {}", config_path.display()))?;
     let cfg: RecordConfig = toml::from_str(&text).context("parse record config")?;
+    cfg.check_font_sizes()?;
     if cfg.scenes.is_empty() {
         bail!("config has no [[scene]] entries");
     }
